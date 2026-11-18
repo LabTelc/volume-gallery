@@ -777,6 +777,10 @@ class SliceBlocksRequest(BaseModel):
 
     blocks: List[int] = Field(max_length=4 * MAX_BLOCKS_PER_REQUEST)
     prefetch: bool = False  # warming the browser's cache: read after everything that is shown
+    enc: str = Field("identity", pattern="^(identity|deflate)$")  # deflate: payloads are packed (see pack_block)
+    # the plane the blocks are for (with enc "deflate"): only the voxels it reads are sent, the rest of each block
+    # is zero (see plane_masks). Such blocks are for this image only and must not be reused for another plane.
+    plane: Optional[SlicePlanRequest] = None
 
 
 @router.post("/{volume_id}/slices/{token}/plan")
@@ -810,20 +814,29 @@ async def slice_blocks(
 ):
     """Streams blocks as they are read, best first (see helpers.slices.stream_blocks for the wire format):
     records of a 16-byte header (gx, gy, gz, payload bytes; uint32 little-endian) and the block's voxels (z, y, x),
-    in the dtype of /info, ending with a record whose gx, gy, gz are all 0xFFFFFFFF and whose size field counts the
+    in the dtype of /info (with "enc": "deflate", a method byte and packed voxels, see pack_block), ending with a record whose gx, gy, gz are all 0xFFFFFFFF and whose size field counts the
     blocks sent. A payload size of 0 is an empty (all zero) block, 0xFFFFFFFE one that could not be read."""
     vs = await run_in_threadpool(_slice_store, volume_id, token, level, session)
     try:
         blocks = vs.check_blocks(body.blocks)
     except SliceError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc))
+    masks = None
+    if body.plane is not None and body.enc == "deflate":
+        p = body.plane
+        if not all(np.isfinite(c) for c in (*p.origin, *p.u, *p.v)):
+            raise HTTPException(status_code=422, detail="origin, u and v must be finite")
+        if p.width * p.height > 64_000_000:
+            raise HTTPException(status_code=413, detail="The image is too large")
+        masks = await run_in_threadpool(vs.plane_masks, tuple(p.origin), tuple(p.u), tuple(p.v), p.pixel, p.width, p.height)
     headers = {
         "Cache-Control": "no-store",
+        "X-Block-Crop": "1" if masks is not None else "0",  # 1: only the voxels the plane reads are filled in
         "X-Accel-Buffering": "no",  # nginx must pass records on as they come
         "X-Block-Count": str(len(blocks)),
         "X-Block-Bytes": str(vs.block_size ** 3 * np.dtype(vs.dtype).itemsize),
     }
-    return StreamingResponse(stream_blocks(vs, blocks, body.prefetch), media_type="application/octet-stream", headers=headers)
+    return StreamingResponse(stream_blocks(vs, blocks, body.prefetch, deflate=body.enc == "deflate", masks=masks), media_type="application/octet-stream", headers=headers)
 
 
 @router.get("/{volume_id}/slices/{token}/{axis}/{index}")

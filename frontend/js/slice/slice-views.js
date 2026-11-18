@@ -846,7 +846,13 @@ export class SliceViews {
    */
   static async create({ grid, getAccessUrl, params = {}, fetchFn }) {
     const baseUrl = await getAccessUrl();
-    const client = await createPlaneClient({ baseUrl, refreshUrl: getAccessUrl, fetchFn }); // (workers sharing one cache where the page can have them)
+    // ?link=slow|fast forces the mode of the block transfer (a slow link gets only the voxels a plane reads); default: judged
+    let link = "auto";
+    try {
+      const q = (params.get ? params.get("link") : params.link) ?? localStorage.getItem("vg_slice_link");
+      if (q === "slow" || q === "fast") link = q;
+    } catch (_) { /* storage unavailable */ }
+    const client = await createPlaneClient({ baseUrl, refreshUrl: getAccessUrl, fetchFn, link }); // (workers sharing one cache where the page can have them)
     try {
       const info = await client.info();
       if (!textureFormatFor(info.dtype)) throw new Error(`Slice views do not support ${info.dtype} data`);
@@ -1116,6 +1122,7 @@ export class SliceViews {
   debugInfo() {
     const c = this.client.stats();
     return {
+      link: c.slow ? "slow (cropped blocks)" : "fast", linkMbps: c.mbps, croppedLoads: c.cropped,
       blocks: c.blocks, cacheMB: c.cacheMB, inflight: c.inflight, queued: c.queued,
       loads: c.loads, cachedBlocks: c.cached, fetchedBlocks: c.fetched, aborted: c.aborted, streamedMB: +(c.bytes / 1e6).toFixed(1),
       lastMs: +c.lastMs.toFixed(1), lastPlanMs: +c.lastPlanMs.toFixed(1), lastServerPlanMs: +c.lastServerPlanMs.toFixed(1),

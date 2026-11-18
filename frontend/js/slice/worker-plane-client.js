@@ -19,7 +19,7 @@ import { SharedBlockCache } from "./block-cache.js";
 import { textureFormatFor } from "./geometry.js";
 
 const abortError = () => new DOMException("aborted", "AbortError");
-const SUM_KEYS = ["loads", "cached", "fetched", "bytes", "aborted"];
+const SUM_KEYS = ["loads", "cached", "fetched", "bytes", "aborted", "cropped"];
 const LAST_KEYS = ["lastMs", "lastPlanMs", "lastServerPlanMs", "lastFirstMs", "lastBlocks"];
 
 /** The image of a plane that a worker is building, as the pane needs it: the shape of PlaneAssembler's. */
@@ -60,7 +60,8 @@ export class WorkerPlaneClient {
    * @param {SharedBlockCache} o.cache
    * @param {() => Promise<string>} o.refreshUrl
    */
-  constructor({ meta, cache, refreshUrl, maxInflight = 2 }) {
+  constructor({ meta, cache, refreshUrl, maxInflight = 2, link = "auto" }) {
+    this.link = link; // "auto" | "slow" | "fast": each worker judges the link from its own streams unless forced
     this.meta = meta;
     this.cache = cache; // (this thread only reads its stats)
     this.baseUrl = meta.baseUrl;
@@ -71,7 +72,7 @@ export class WorkerPlaneClient {
     this._jobs = new Map();    // id -> { asm, onUpdate, resolve, reject, prefetch }
     this._seq = 0;
     this._disposed = false;
-    this._stats = new Map();   // axis -> the worker's last counters
+    this._stats = new Map();   // axis -> the worker's last counters (slow, mbps, ... included)
     this._last = {};
     this._fallback = false;    // a worker could not run: planes load on this thread (through `meta`) from now on
     meta.refreshUrl = () => this._renewUrl();
@@ -116,6 +117,8 @@ export class WorkerPlaneClient {
     const out = { ...this.cache.stats(), inflight: this._jobs.size, queued: 0, ...this._last };
     for (const k of SUM_KEYS) out[k] = 0;
     for (const s of this._stats.values()) for (const k of SUM_KEYS) out[k] += s[k] ?? 0;
+    out.slow = this.link === "slow" || [...this._stats.values()].some((s) => s.slow);
+    out.mbps = Math.max(0, ...[...this._stats.values()].map((s) => s.mbps ?? 0));
     for (const k of LAST_KEYS) out[k] ??= 0;
     return out;
   }
@@ -141,7 +144,7 @@ export class WorkerPlaneClient {
     w = new Worker(/* webpackChunkName: "slice-worker" */ new URL("./slice-worker.js", import.meta.url), { name: `slice-${axis}` });
     w.onmessage = (e) => this._onMessage(axis, w, e.data);
     w.onerror = (e) => this._onCrash(axis, e.message || "The slice worker failed");
-    w.postMessage({ type: "init", baseUrl: this.baseUrl, cache: this.cache.init, maxInflight: this.maxInflight });
+    w.postMessage({ type: "init", baseUrl: this.baseUrl, cache: this.cache.init, maxInflight: this.maxInflight, link: this.link });
     this._workers.set(axis, w);
     return w;
   }
@@ -228,7 +231,7 @@ export async function createPlaneClient(opts) {
       maxBytes: opts.maxCacheBytes ?? 512e6,
     });
     if (!cache) return meta;
-    return new WorkerPlaneClient({ meta, cache, refreshUrl: opts.refreshUrl ?? (async () => meta.baseUrl) });
+    return new WorkerPlaneClient({ meta, cache, refreshUrl: opts.refreshUrl ?? (async () => meta.baseUrl), link: opts.link ?? "auto" });
   } catch (err) {
     console.warn("[slice] workers unavailable, loading planes on the main thread:", err);
     return meta;

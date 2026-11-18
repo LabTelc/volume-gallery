@@ -912,6 +912,37 @@ class VolumeSlicesKiln:
             return None
         return np.ascontiguousarray(core, dtype=_NATIVE[self.dtype][0])
 
+    def _plane_frame(self, origin, u, v, pixel) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """p0, du, dv of a plane (see plan_plane), in voxel index space."""
+        sp = np.array([self.spacing["x"], self.spacing["y"], self.spacing["z"]], dtype=np.float64)
+        u = np.asarray(u, dtype=np.float64)
+        v = np.asarray(v, dtype=np.float64)
+        p0 = (np.asarray(origin, dtype=np.float64) + 0.5 * pixel * (u + v)) / sp - 0.5
+        return p0, pixel * u / sp, pixel * v / sp
+
+    def plane_masks(
+        self,
+        origin: Tuple[float, float, float],
+        u: Tuple[float, float, float],
+        v: Tuple[float, float, float],
+        pixel: float,
+        width: int,
+        height: int,
+    ) -> Optional["PlaneMasks"]:
+        """The voxels the browser reads of each block for a plane (as in plan_plane): `.get((gx, gy, gz))` gives a
+        boolean (bs, bs, bs) array of the voxels a trilinear sample of some pixel touches (a voxel whose weight is
+        exactly zero is not read), or None when nothing of the block is read. Everything else of a block can be
+        left out of what is sent. Nothing is computed up front: each block's mask is worked out when it is asked
+        for, from the pixels near that block only, so the blocks that matter most can go out at once and the
+        work spreads over the reading threads. Pixels are placed with the very operations the plan and the browser
+        use (float64, same order), so the voxels found are the voxels read. None for an image of more than
+        MAX_CROP_PIXELS pixels."""
+        if width * height > MAX_CROP_PIXELS:
+            return None
+        p0, du, dv = self._plane_frame(origin, u, v, pixel)
+        dims = (self.dims["x"], self.dims["y"], self.dims["z"])
+        return PlaneMasks(self.block_size, dims, p0, du, dv, width, height)
+
     def plan_plane(
         self,
         origin: Tuple[float, float, float],
@@ -933,12 +964,7 @@ class VolumeSlicesKiln:
           empty (zero) or outside the volume.
         Pixels that fall outside the volume read from no block and stay zero."""
         t0 = time.perf_counter()
-        sp = np.array([self.spacing["x"], self.spacing["y"], self.spacing["z"]], dtype=np.float64)
-        u = np.asarray(u, dtype=np.float64)
-        v = np.asarray(v, dtype=np.float64)
-        p0 = (np.asarray(origin, dtype=np.float64) + 0.5 * pixel * (u + v)) / sp - 0.5
-        du = pixel * u / sp
-        dv = pixel * v / sp
+        p0, du, dv = self._plane_frame(origin, u, v, pixel)
         dims = (self.dims["x"], self.dims["y"], self.dims["z"])
         bs = self.block_size
         nbx, nby, nbz = (self.block_grid[a] for a in "xyz")
@@ -1131,7 +1157,108 @@ BLOCK_HEADER = struct.Struct("<4I")  # gx, gy, gz, payload bytes
 BLOCK_EMPTY = 0                      # payload size of a block whose brick is empty: all zero, no payload
 BLOCK_ERROR = 0xFFFFFFFE             # payload size of a block that could not be read
 STREAM_END = 0xFFFFFFFF              # gx, gy, gz of the closing record; the 4th field is the number of blocks sent
+MAX_CROP_PIXELS = 16_000_000         # an image bigger than this is sent as whole blocks
 MAX_BLOCKS_PER_REQUEST = 40_000
+
+
+def _clip_polygon(poly, A, B, C):
+    """The part of a convex polygon [(x, y)] where A * x + B * y <= C (Sutherland-Hodgman, as geometry.js)."""
+    out = []
+    n = len(poly)
+    for i in range(n):
+        p, q = poly[i], poly[(i + 1) % n]
+        vp, vq = A * p[0] + B * p[1] - C, A * q[0] + B * q[1] - C
+        if vp <= 0:
+            out.append(p)
+        if (vp < 0 and vq > 0) or (vp > 0 and vq < 0):
+            t = vp / (vp - vq)
+            out.append((p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t))
+    return out
+
+
+class PlaneMasks:
+    """The voxels a plane reads of each block (see VolumeSlicesKiln.plane_masks); a mask is computed per block, on
+    demand, from the part of the image (rows, and per row a span of columns, found by clipping) that is within
+    a voxel of the block, the way the browser's assembler finds the pixels of a block."""
+
+    EPS = 1e-6
+
+    def __init__(self, bs, dims, p0, du, dv, width, height):
+        self.bs, self.dims, self.p0, self.du, self.dv = bs, dims, p0, du, dv
+        self.width, self.height = width, height
+
+    def get(self, block: Tuple[int, int, int], default=None) -> Optional[np.ndarray]:
+        bs, dims, p0, du, dv, w, h = self.bs, self.dims, self.p0, self.du, self.dv, self.width, self.height
+        lo, hi = [], []
+        for k in range(3):
+            lo.append(max(block[k] * bs - 1 - self.EPS, -0.5))
+            hi.append(min(block[k] * bs + bs + self.EPS, dims[k] - 0.5))
+            if lo[k] >= hi[k]:
+                return default
+        poly = [(-0.5, -0.5), (w - 0.5, -0.5), (w - 0.5, h - 0.5), (-0.5, h - 0.5)]
+        for k in range(3):
+            poly = _clip_polygon(poly, du[k], dv[k], hi[k] - p0[k])
+            if poly:
+                poly = _clip_polygon(poly, -du[k], -dv[k], p0[k] - lo[k])
+            if not poly:
+                return default
+        ys = [q[1] for q in poly]
+        r0, r1 = max(0, int(np.floor(min(ys))) - 1), min(h - 1, int(np.ceil(max(ys))) + 1)
+        if r1 < r0:
+            return default
+        rows = np.arange(r0, r1 + 1, dtype=np.float64)
+        c_lo = np.full(rows.shape, -np.inf)
+        c_hi = np.full(rows.shape, np.inf)
+        for k in range(3):
+            base = p0[k] + rows * dv[k]
+            if abs(du[k]) < 1e-12:
+                bad = (base < lo[k]) | (base >= hi[k])
+                c_lo[bad], c_hi[bad] = np.inf, -np.inf
+                continue
+            t1, t2 = (lo[k] - base) / du[k], (hi[k] - base) / du[k]
+            c_lo = np.maximum(c_lo, np.minimum(t1, t2))
+            c_hi = np.minimum(c_hi, np.maximum(t1, t2))
+        ok = c_lo <= c_hi
+        if not ok.any():
+            return default
+        rows, c_lo, c_hi = rows[ok], c_lo[ok], c_hi[ok]
+        c0 = np.maximum(0, np.floor(c_lo) - 1).astype(np.int64)
+        c1 = np.minimum(w - 1, np.ceil(c_hi) + 1).astype(np.int64)
+        counts = np.maximum(c1 - c0 + 1, 0)
+        total = int(counts.sum())
+        if total == 0:
+            return default
+        rr = np.repeat(rows, counts)
+        start = np.cumsum(counts) - counts
+        cc = (np.arange(total) - np.repeat(start, counts) + np.repeat(c0, counts)).astype(np.float64)
+        pos = [(p0[k] + rr * dv[k]) + cc * du[k] for k in range(3)]
+        inside = np.ones(total, dtype=bool)
+        for k in range(3):
+            inside &= (pos[k] >= -0.5) & (pos[k] < dims[k] - 0.5)
+        if not inside.any():
+            return default
+        lo_v, hi_v, has_hi = [], [], []
+        for k in range(3):
+            q = pos[k][inside]
+            f = np.floor(q)
+            a = np.maximum(f, 0).astype(np.int64)
+            b = np.minimum(f + 1, dims[k] - 1).astype(np.int64)
+            lo_v.append(a)
+            hi_v.append(b)
+            has_hi.append(((q - f) != 0) & (b != a))
+        mask = np.zeros(bs ** 3, dtype=bool)
+        for i in (0, 1):
+            for j in (0, 1):
+                for k in (0, 1):
+                    sel = np.ones(lo_v[0].shape, dtype=bool)
+                    for flag, ax in ((i, 0), (j, 1), (k, 2)):
+                        if flag:
+                            sel &= has_hi[ax]
+                    c = [(hi_v if f else lo_v)[ax][sel] for f, ax in ((i, 0), (j, 1), (k, 2))]
+                    mine = (c[0] // bs == block[0]) & (c[1] // bs == block[1]) & (c[2] // bs == block[2])
+                    if mine.any():
+                        mask[((c[2][mine] % bs) * bs + (c[1][mine] % bs)) * bs + (c[0][mine] % bs)] = True
+        return mask.reshape(bs, bs, bs) if mask.any() else default
 
 
 class PriorityPool:
@@ -1175,6 +1302,20 @@ class PriorityPool:
 _BLOCK_POOL = PriorityPool(_NUM_WORKERS)
 
 
+def pack_block(arr: np.ndarray, deflate: bool) -> bytes:
+    """The payload of a block: its voxels (z, y, x) as they are, or (deflate, for a slow link) a method byte and
+    the data: 1 = the bytes of each voxel split into planes (all low bytes, then all high bytes: smooth data
+    makes long runs of equal high bytes) and zlib-deflated at level 1 (fast enough to keep up with the pool, and
+    most of the gain), 0 = the voxels as they are (when deflating did not make them smaller)."""
+    raw = np.ascontiguousarray(arr)
+    if not deflate:
+        return raw.tobytes()
+    isz = raw.dtype.itemsize
+    data = raw.view(np.uint8).reshape(-1, isz).T.tobytes() if isz > 1 else raw.tobytes()
+    packed = zlib.compress(data, 1)
+    return b"\x01" + packed if len(packed) < raw.nbytes else b"\x00" + raw.tobytes()
+
+
 def encode_block(gx: int, gy: int, gz: int, payload: Optional[bytes], failed: bool = False) -> bytes:
     if failed:
         return BLOCK_HEADER.pack(gx, gy, gz, BLOCK_ERROR)
@@ -1188,11 +1329,16 @@ async def stream_blocks(
     blocks: List[Tuple[int, int, int, int]],
     prefetch: bool = False,
     window: Optional[int] = None,
+    deflate: bool = False,
+    masks: Optional[PlaneMasks] = None,
 ):
     """Async generator of the wire form of `blocks` ([(gx, gy, gz, weight)]), each record as soon as its block
     has been read, not in request order: header (4 x uint32 LE: gx, gy, gz, payload bytes) + payload, the block's
     voxels (z, y, x) in the transport dtype; a closing record (STREAM_END x3, count) tells a complete stream from
     a cut one.
+
+    `masks` (see plane_masks) makes the blocks partial: the voxels outside a
+    block's mask are sent as zero (which deflates to next to nothing), and a block nothing is read from as empty.
 
     Reads go through the shared priority pool, best first: foreground before prefetch, then by weight. Only
     `window` reads are outstanding at a time (a slow client does not make the server read ahead without
@@ -1212,7 +1358,15 @@ async def stream_blocks(
             return
         try:
             arr = vs.read_block(gx, gy, gz)
-            item = (gx, gy, gz, arr.tobytes() if arr is not None else None, False)
+            if arr is not None and masks is not None:
+                m = masks.get((gx, gy, gz))
+                if m is None or not m.any():
+                    arr = None  # nothing of it is read
+                else:
+                    cut = np.zeros_like(arr)
+                    cut[m] = arr[m]
+                    arr = cut
+            item = (gx, gy, gz, pack_block(arr, deflate) if arr is not None else None, False)
         except Exception:
             log.exception("reading block (%s, %s, %s) failed", gx, gy, gz)
             item = (gx, gy, gz, None, True)

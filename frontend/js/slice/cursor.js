@@ -229,6 +229,32 @@ export class SliceState {
     this._emit("orientation", { source });
   }
 
+  // ------------------------------------------------------ zoom, pan, flips of a pane
+
+  /** Changes the zoom / pan of a pane ({zoom, centerU, centerV}: offsets from the image centre). With `linkZoom` the other panes zoom to match. */
+  setView(axis, view, source = null) {
+    const prev = this.views[axis];
+    this.views[axis] = { ...prev, ...view };
+    this._emit("view", { axis, source });
+    if (this.linkZoom && view.zoom !== undefined && view.zoom !== prev.zoom) {
+      for (const other of AXES) {
+        if (other === axis || this.views[other].zoom === view.zoom) continue;
+        this.views[other] = { ...this.views[other], zoom: view.zoom };
+        this._emit("view", { axis: other, source });
+      }
+    }
+  }
+
+  resetView(axis) {
+    this.views[axis] = defaultView();
+    this._emit("view", { axis });
+  }
+
+  toggleFlip(axis, which) {
+    this.flips[axis][which] *= -1;
+    this._emit("view", { axis });
+  }
+
   // ------------------------------------------------------ window and the rest
 
   setWindow(win) {

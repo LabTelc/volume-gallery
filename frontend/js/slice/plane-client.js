@@ -9,12 +9,28 @@
 //
 // Blocks are kept in a byte-budgeted LRU, so a plane that overlaps one already seen (scrolling, a crosshair that
 // moves, a plane that turns a little) is mostly assembled at once from the cache and only the rest is fetched.
+// On a slow link (measured from the block streams, or reported by the browser) the blocks are asked for with the
+// plane they are for, and the server sends only the voxels that plane reads (the rest of a block is zero, which
+// deflates to nothing): about the plane's own size instead of 10-20 times it. Such blocks are good for that image
+// only, so they are not cached, and nothing is prefetched.
+//
 // A load nobody waits for any more is aborted ("latest wins" while dragging); foreground loads run before
 // prefetches, at most `maxInflight` at a time.
 
-import { PlaneAssembler, BlockStreamParser } from "./plane-assembler.js";
+import { PlaneAssembler, BlockStreamParser, unpackBlock, canUnpack } from "./plane-assembler.js";
 import { PrivateBlockCache } from "./block-cache.js";
 import { textureFormatFor } from "./geometry.js";
+
+/** The browser's own idea of the connection, as a starting point before any stream has been timed. */
+function guessSlow() {
+  try {
+    const c = navigator.connection;
+    if (!c) return false;
+    return !!c.saveData || ["slow-2g", "2g", "3g"].includes(c.effectiveType) || (c.downlink > 0 && c.downlink < 10);
+  } catch (_) {
+    return false;
+  }
+}
 
 export class PlaneError extends Error {
   constructor(message, status = 0) {
@@ -35,20 +51,29 @@ export class PlaneClient {
    *   `refused` is the baseUrl that was refused
    * @param {object} [o.cache]  where the blocks are kept (block-cache.js): a PrivateBlockCache of `maxCacheBytes`
    *   by default; the pane workers pass the SharedBlockCache they share
+   * @param {boolean} [o.compress]  ask for deflated blocks (default: when the browser can unpack them)
+   * @param {"auto"|"slow"|"fast"} [o.link]  "auto" judges the link (bytes per second of the streams; navigator.connection
+   *   at the start); "slow" / "fast" force it. A slow link gets blocks cropped to the plane.
    */
-  constructor({ baseUrl, fetchFn = (...a) => fetch(...a), refreshUrl = null, maxCacheBytes = 512e6, maxInflight = 3, cache = null }) {
+  constructor({ baseUrl, fetchFn = (...a) => fetch(...a), refreshUrl = null, maxCacheBytes = 512e6, maxInflight = 3, cache = null, compress = canUnpack(), link = "auto", slowBelow = 1.5e6, fastAbove = 4e6 }) {
     this.baseUrl = baseUrl;
     this.fetchFn = fetchFn;
     this.refreshUrl = refreshUrl;
     this.maxCacheBytes = maxCacheBytes;
     this.maxInflight = maxInflight;
     this.cache = cache ?? new PrivateBlockCache({ maxBytes: maxCacheBytes });
+    this.compress = compress;
+    this.link = link;
+    this.slowBelow = slowBelow; // bytes/s: below this the link is slow (auto) ...
+    this.fastAbove = fastAbove; // ... and above this it is fast again (in between it stays as it was)
+    this.rate = 0;              // bytes/s, smoothed; 0 = not measured yet
+    this._slow = guessSlow();
     this._queue = [];
     this._running = 0;
     this._seq = 0;
     this._info = null;
     this._disposed = false;
-    this.counters = { loads: 0, cached: 0, fetched: 0, bytes: 0, aborted: 0, lastMs: 0, lastPlanMs: 0, lastServerPlanMs: 0, lastFirstMs: 0, lastBlocks: 0 };
+    this.counters = { loads: 0, cached: 0, fetched: 0, bytes: 0, aborted: 0, lastMs: 0, lastPlanMs: 0, lastServerPlanMs: 0, lastFirstMs: 0, lastBlocks: 0, cropped: 0 };
   }
 
   async info() {
@@ -72,6 +97,7 @@ export class PlaneClient {
   loadPlane(spec, { channel = 0, priority = 1, signal, underlay = null, onUpdate = null, prefetch = false } = {}) {
     return new Promise((resolve, reject) => {
       if (this._disposed || signal?.aborted) { reject(abortError()); return; }
+      if (prefetch && this.cropping) { resolve({ plan: null, assembler: null }); return; } // what a slow link fetches is for the image on screen only
       const job = { spec, channel, priority: prefetch ? 0 : priority, underlay, onUpdate, prefetch, seq: this._seq++, controller: new AbortController(), resolve, reject, started: false };
       signal?.addEventListener("abort", () => {
         if (job.started) job.controller.abort();
@@ -92,8 +118,28 @@ export class PlaneClient {
     this.loadPlane(spec, { channel, prefetch: true }).catch(() => {});
   }
 
+  /** Whether the link counts as slow now. */
+  get slow() {
+    return this.link === "slow" || (this.link === "auto" && this._slow);
+  }
+
+  /** Whether blocks are asked for cropped to the plane (a slow link, and a browser that can unpack them). */
+  get cropping() {
+    return this.compress && this.slow;
+  }
+
+  /** Folds the speed of a finished stream (bytes after the first chunk, over the time they took) into the estimate. */
+  _measure(bytes, ms) {
+    if (bytes < 64e3 || ms < 40) return; // too little to tell the link from latency
+    const sample = (bytes / ms) * 1000;
+    this.rate = this.rate ? 0.6 * this.rate + 0.4 * sample : sample;
+    if (this.rate < this.slowBelow) this._slow = true;
+    else if (this.rate > this.fastAbove) this._slow = false;
+  }
+
   stats() {
     return {
+      slow: this.slow, mbps: +((this.rate * 8) / 1e6).toFixed(1),
       ...this.cache.stats(),
       inflight: this._running,
       queued: this._queue.length,
@@ -200,15 +246,29 @@ export class PlaneClient {
       let got = 0;
       for (let from = 0; from < missing.length; from += perRequest) {
         signal.throwIfAborted();
-        const res = await this._request("blocks", { signal, json: { blocks: missing.slice(from, from + perRequest), prefetch } });
+        const crop = !prefetch && this.cropping;
+        const res = await this._request("blocks", { signal, json: { blocks: missing.slice(from, from + perRequest), prefetch, enc: this.compress ? "deflate" : "identity", ...(crop ? { plane: spec } : {}) } });
+        const partial = crop && res.headers?.get?.("X-Block-Crop") === "1"; // blocks that hold only what this plane reads
+        if (partial) this.counters.cropped++;
+        let tFirst = 0, bytesFirst = 0, bytesAll = 0;
+        const unpacking = [];
+        const count = plan.blockSize ** 3;
+        const arrive = (gx, gy, gz, data) => {
+          // (a cropped block is for this image only: it stays out of the cache)
+          const stored = partial ? data : cache.put(channel, gx, gy, gz, data, mine); // (the cache's copy, when it keeps one)
+          asm?.add(gx, gy, gz, stored);
+          if (!got++) first = performance.now() - t0;
+        };
         const parser = new BlockStreamParser({
           Array: fmt.array,
           blockBytes: plan.blockSize ** 3 * fmt.array.BYTES_PER_ELEMENT,
-          onBlock: (gx, gy, gz, data) => {
-            const stored = cache.put(channel, gx, gy, gz, data, mine); // (the cache's copy, when it keeps one)
-            asm?.add(gx, gy, gz, stored);
-            if (!got++) first = performance.now() - t0;
-          },
+          packed: this.compress,
+          onBlock: this.compress
+            ? (gx, gy, gz, data) => {
+                if (data === null) { arrive(gx, gy, gz, null); return; }
+                unpacking.push(unpackBlock(data, fmt.array, count).then((v) => { arrive(gx, gy, gz, v); job.onUpdate?.(asm); }));
+              }
+            : arrive,
         });
         if (res.body?.getReader) {
           const reader = res.body.getReader();
@@ -218,6 +278,8 @@ export class PlaneClient {
               if (done) break;
               signal.throwIfAborted();
               this.counters.bytes += value.length;
+              bytesAll += value.length;
+              if (!tFirst) { tFirst = performance.now(); bytesFirst = value.length; }
               parser.push(value);
               job.onUpdate?.(asm);
             }
@@ -230,6 +292,9 @@ export class PlaneClient {
           parser.push(buf);
           job.onUpdate?.(asm);
         }
+        if (tFirst && !prefetch && this.link === "auto") this._measure(bytesAll - bytesFirst, performance.now() - tFirst);
+        await Promise.all(unpacking);
+        signal.throwIfAborted();
         if (!parser.complete) throw new PlaneError("The block stream ended early");
       }
       this.counters.fetched += got;
