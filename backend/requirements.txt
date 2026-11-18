@@ -18,5 +18,5 @@ scipy==1.18.1
 pymeshlab==2025.7.post1
 pillow==13.0.0
 # --- Job queue ---
-redis==6.4.0
+redis==8.1.0
 rq==2.6.0
