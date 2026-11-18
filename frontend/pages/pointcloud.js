@@ -1,5 +1,6 @@
 // The page script of viewers/pointcloud.html (it was an inline <script type="module"> there). Bundled by webpack.config.js.
 import { api, requireLogin, getRole, getUsername, renderShell, wireLogout } from "../js/api.js";
+import { backToFolderButton } from "../js/back-link.js";
 import { toggleHelpPanel } from "../js/help.js";
 import { makeDescriptionExpandable } from "../js/description.js";
 
@@ -42,6 +43,7 @@ async function init() {
 
   content.innerHTML = `
     <div class="viewer-topbar">
+      ${backToFolderButton(pc)}
       <div class="viewer-titles">
         <h1>${escapeHtml(pc.title)}</h1>
         ${pc.description ? `<div class="viewer-desc">${escapeHtml(pc.description)}</div>` : ""}

@@ -1,5 +1,6 @@
 // The page script of viewers/volume.html (it was an inline <script type="module"> there). Bundled by webpack.config.js.
     import { api, requireLogin, getRole, getUsername, renderShell, wireLogout } from "../js/api.js";
+    import { backToFolderButton } from "../js/back-link.js";
     import { syncHistogram } from "../js/histogram.js";
 import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/slice/transfer-function.js";
     import { KilnViewer } from "kiln-render";
@@ -253,6 +254,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
 
       content.innerHTML = `
         <div class="viewer-topbar">
+          ${backToFolderButton(volume)}
           <div class="viewer-titles">
             <h1>${escapeHtml(volume.title)}</h1>
             ${volume.description ? `<div class="viewer-desc">${escapeHtml(volume.description)}</div>` : ""}

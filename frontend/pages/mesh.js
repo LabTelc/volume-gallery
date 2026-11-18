@@ -1,5 +1,6 @@
 // The page script of viewers/mesh.html (it was an inline <script type="module"> there). Bundled by webpack.config.js.
 import { api, requireLogin, getRole, getUsername, renderShell, wireLogout } from "../js/api.js";
+import { backToFolderButton } from "../js/back-link.js";
 import { toggleHelpPanel } from "../js/help.js";
 import { makeDescriptionExpandable } from "../js/description.js";
 
@@ -77,6 +78,7 @@ async function init() {
       mesh = {
         title: `${volume.title} \u2014 mesh`,
         description: volume.description,
+        folder_id: volume.folder_id,
         can_download: true, // the volume's permission applies
       };
     } else {
@@ -90,6 +92,7 @@ async function init() {
 
   content.innerHTML = `
     <div class="viewer-topbar">
+      ${backToFolderButton(mesh)}
       <div class="viewer-titles">
         <h1>${escapeHtml(mesh.title)}</h1>
         ${mesh.description ? `<div class="viewer-desc">${escapeHtml(mesh.description)}</div>` : ""}
