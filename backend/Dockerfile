@@ -53,29 +53,37 @@ RUN git clone --depth 1 --branch 2025.07 https://github.com/cnr-isti-vclab/vcgli
     && ldd "$JPEG_PLUGIN" | awk '/=> \//{print $3}' \
        | grep -v -E '/lib(c|m)\.so' | sort -u | xargs -I{} cp -L {} /opt/nexus/lib/
 
-# kiln-render: built from the v0.5.0 GitHub tag + our patch (backend/kiln-patches).
+# kiln-render: built from the v0.6.1 GitHub tag + our patches (backend/kiln-patches).
 # Its own stage so it is cached independently and never depends on what happens to
 # be in frontend/vendor. The patches lift the 10-slots-per-axis atlas cap, add finer LOD
-# levels and make the camera rotate freely (no poles, with roll).
+# levels, make the camera rotate freely (no poles, with roll), read tiled LOD-0 bricks,
+# add custom colour stops and crop shapes (plane, box, cylinder, sphere).
+# The patches are against kiln-render's TypeScript source (src/, test/) and apply before the
+# build; the library's own tests then run on the patched source. A patch that no longer fits a
+# new kiln-render release therefore fails the image build instead of shipping a broken viewer.
 FROM oven/bun:1-debian AS kiln
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git wget unzip \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /kiln
 # The download is checked against a SHA-256 (a changed archive fails the build); update it with the tag.
-ARG KILN_RENDER_SHA256=5e2fa62437ca063d980354c88817faacc28b2251641a3da72f26fd31d2ec6040
-RUN wget -q "https://github.com/MPanknin/kiln-render/archive/refs/tags/v0.5.0.zip" -O kiln-render.zip \
+ARG KILN_RENDER_SHA256=204b619038da44aed793f58a494e9d05b284ad27a80006a0b5a478d4546c26de
+RUN wget -q "https://github.com/MPanknin/kiln-render/archive/refs/tags/v0.6.1.zip" -O kiln-render.zip \
     && echo "${KILN_RENDER_SHA256}  kiln-render.zip" | sha256sum -c - \
     && unzip -q kiln-render.zip \
-    && mv kiln-render-0.5.0/* kiln-render-0.5.0/.[!.]* . 2>/dev/null || true \
-    && rm -rf kiln-render-0.5.0 kiln-render.zip \
-    && bun install --frozen-lockfile \
-    && bun run build:lib
+    && mv kiln-render-0.6.1/* kiln-render-0.6.1/.[!.]* . 2>/dev/null || true \
+    && rm -rf kiln-render-0.6.1 kiln-render.zip \
+    && bun install --frozen-lockfile
 COPY backend/kiln-patches /tmp/kiln-patches
 RUN sed -i 's/\r$//' /tmp/kiln-patches/*.patch \
     && git apply --ignore-whitespace /tmp/kiln-patches/*.patch \
+    && bun run test -- --run \
+    && bun run build:lib \
     && grep -q "MAX_GRID_SIZE = 32" lib/kiln-render.js \
     && grep -q "getFullOrbitState" lib/kiln-render.js \
-    && grep -q 'hSign = this.upAxis.startsWith("-") ? 1 : -1' lib/kiln-render.js
+    && grep -q 'hSign = this.upAxis.startsWith("-") ? 1 : -1' lib/kiln-render.js \
+    && grep -q "untileBrick66" lib/kiln-render.js \
+    && grep -q "setColorStops" lib/kiln-render.js \
+    && grep -q "setCropShapes" lib/kiln-render.js
 
 # The frontend, bundled with webpack (frontend/webpack.config.js): every file gets a hash of its content in its
 # name, so browsers never hold a stale copy and the pages need no ?v=... cache busting. The patched kiln-render

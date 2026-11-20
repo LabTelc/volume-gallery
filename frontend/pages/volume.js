@@ -104,6 +104,27 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
 
     const fx = (v, digits = 3) => Number(v).toFixed(digits);
 
+    // Crop shapes (kiln-render patch 0007) travel in `crop`: shapes separated by ";", each
+    // "type:flags:cx,cy,cz:sx,sy,sz:rx,ry,rz". flags: e|d (enabled / disabled) + i|o (remove the inside / the outside).
+    const CROP_TYPES = ["plane", "box", "cylinder", "sphere"];
+    function encodeCrop(shapes) {
+      return shapes.map((s) => [
+        s.type, (s.enabled ? "e" : "d") + (s.mode === "outside" ? "o" : "i"),
+        s.center.map((v) => fx(v)).join(","), s.size.map((v) => fx(v)).join(","), s.rotation.map((v) => fx(v, 1)).join(","),
+      ].join(":")).join(";");
+    }
+    function decodeCrop(str) {
+      if (!str) return undefined;
+      const shapes = [];
+      for (const part of str.split(";")) {
+        const [type, flags, c, s, r] = part.split(":");
+        const center = numList(c, [3]), size = numList(s, [3]), rotation = numList(r, [3]);
+        if (!CROP_TYPES.includes(type) || !/^[ed][io]$/.test(flags || "") || !center || !size || !rotation) return undefined;
+        shapes.push({ type, enabled: flags[0] === "e", mode: flags[1] === "o" ? "outside" : "inside", center, size, rotation });
+      }
+      return shapes.length ? shapes : undefined;
+    }
+
     function stateToParams(state, minLevel) {
       const p = new URLSearchParams();
       p.set("id", volumeId);
@@ -120,6 +141,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
       p.set("cam", state.cam.map((v) => fx(v)).join(","));
       if (state.clipMin.some((v) => v !== 0)) p.set("clipMin", state.clipMin.map((v) => fx(v)).join(","));
       if (state.clipMax.some((v) => v !== 1)) p.set("clipMax", state.clipMax.map((v) => fx(v)).join(","));
+      if (state.crop?.some((s) => s.enabled)) p.set("crop", encodeCrop(state.crop));
       if (state.showWireframe) p.set("wireframe", "1");
       if (state.showAxis) p.set("axis", "1");
       if (minLevel != null) p.set("minLevel", String(minLevel));
@@ -142,6 +164,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
         cam: state.cam,
         clipMin: state.clipMin,
         clipMax: state.clipMax,
+        ...(state.crop ? { crop: state.crop.map((s) => ({ ...s, center: [...s.center], size: [...s.size], rotation: [...s.rotation] })) } : {}),
         showWireframe: state.showWireframe,
         showAxis: state.showAxis,
       };
@@ -184,6 +207,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
       const cam = numList(p.get("cam"), [3, 6, 12]); if (cam) o.cam = cam;  // 12: a rolled view (kiln patch 0003)
       const clipMin = numList(p.get("clipMin"), [3]); if (clipMin) o.clipMin = clipMin;
       const clipMax = numList(p.get("clipMax"), [3]); if (clipMax) o.clipMax = clipMax;
+      const crop = decodeCrop(p.get("crop")); if (crop) o.crop = crop;
       if (p.get("wireframe") === "1") o.showWireframe = true;
       if (p.get("axis") === "1") o.showAxis = true;
 
@@ -199,7 +223,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
     // UI state that must survive a reload of the viewer (the side panel is
     // rebuilt for each KilnViewer, so its open/closed state lives here).
     // ------------------------------------------------------------------
-    const uiState = { panelOpen: true, infoOpen: false, sceneOpen: true, advancedOpen: false, panelScroll: 0, scaleBar: true, freeRotation: true };
+    const uiState = { panelOpen: true, infoOpen: false, sceneOpen: true, advancedOpen: false, cropOpen: false, panelScroll: 0, scaleBar: true, freeRotation: true };
 
     function setPanelOpen(open) {
       uiState.panelOpen = open;
@@ -970,7 +994,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
       const renderer = viewer.renderer;
       const camera = viewer.camera;
       const tf = viewer.transferFunction;
-      // "Custom" colour stops need kiln-render patch 0007; without it the preset list stays as it was.
+      // "Custom" colour stops need kiln-render patch 0006; without it the preset list stays as it was.
       const canCustomColours = typeof tf.setColorStops === "function";
       const tfPresetChoices = canCustomColours ? [...TF_PRESETS, ["custom", "Custom"]] : TF_PRESETS;
       const [dimX, dimY, dimZ] = viewer.metadata.dimensions;
@@ -999,6 +1023,59 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
         renderer.markDirty();
         renderer.resetAccumulation();
       };
+
+      // --- crop shapes (kiln-render patch 0007): one of each kind, each switchable and set to remove its inside
+      // or its outside. Position is a fraction of the volume box; sizes are fractions of its longest side. ---
+      const canCrop = typeof renderer.setCropShapes === "function";
+      const CROP_UI = {
+        plane: { label: "Plane", sides: ["\u2212 side", "+ side"], sizes: [] },
+        box: { label: "Cube", sizes: [["Size X", 0, 1 / 200, 150], ["Size Y", 1, 1 / 200, 150], ["Size Z", 2, 1 / 200, 150]] },
+        cylinder: { label: "Cylinder", sizes: [["Radius", 0, 1 / 100, 75], ["Length", 1, 1 / 200, 150]] },
+        sphere: { label: "Sphere", sizes: [["Radius", 0, 1 / 100, 75]] },
+      };
+      const CROP_DEFAULT_SIZE = { plane: [0, 0, 0], box: [0.25, 0.25, 0.25], cylinder: [0.25, 0.25, 0], sphere: [0.25, 0, 0] };
+      const PLANE_AXIS_ROTATION = { X: [0, 90, 0], Y: [-90, 0, 0], Z: [0, 0, 0] }; // turns the plane's normal onto +X / +Y / +Z
+      const existingCrop = canCrop ? renderer.getCropShapes() : [];
+      const cropList = CROP_TYPES.map((type) => {
+        const e = existingCrop.find((s) => s.type === type);
+        return e ? { ...e, center: [...e.center], size: [...e.size], rotation: [...e.rotation] }
+          : { type, enabled: false, mode: "inside", center: [0.5, 0.5, 0.5], size: [...CROP_DEFAULT_SIZE[type]], rotation: [0, 0, 0] };
+      });
+      const cropSliderHtml = (role, label, min, max, value) => `
+        <div class="ctl-slider-row">
+          <span class="ctl-row-label ctl-slider-label">${label}</span>
+          <div class="ctl-slider-track">
+            <div class="ctl-slider-fill" data-role="fill-${role}"></div>
+            <input type="range" class="ctl-slider-input" data-role="slider-${role}" min="${min}" max="${max}" step="1" value="${Math.round(value)}">
+          </div>
+          <span class="ctl-row-value ctl-mono" data-role="value-${role}"></span>
+        </div>`;
+      function cropShapeHtml(shape) {
+        const ui = CROP_UI[shape.type];
+        const sides = ui.sides || ["Remove inside", "Remove outside"];
+        const sideTitles = shape.type === "plane"
+          ? ["Removes the part behind the plane (the side its normal points away from); the \u2212 side is the lower end of the axis", "Removes the part in front of the plane (the side its normal points to)"]
+          : ["Cuts the shape out of the volume", "Keeps only what is inside the shape"];
+        return `
+          <div class="ctl-crop" data-crop="${shape.type}">
+            <label class="ctl-toggle-row">
+              <span class="ctl-row-label ctl-toggle-label">${ui.label}</span>
+              <input type="checkbox" class="ctl-toggle-input" data-role="crop-on-${shape.type}" ${shape.enabled ? "checked" : ""}>
+              <span class="ctl-toggle-track"></span>
+            </label>
+            <div class="ctl-crop-body"${shape.enabled ? "" : " hidden"}>
+              <div class="ctl-segmented" data-role="crop-mode-${shape.type}">
+                ${["inside", "outside"].map((m, i) => `<button type="button" class="ctl-segment${shape.mode === m ? " active" : ""}" data-mode="${m}" title="${sideTitles[i]}">${sides[i]}</button>`).join("")}
+              </div>
+              ${shape.type === "plane" ? `<div class="ctl-segmented" data-role="crop-axis-plane" title="Turn the plane so that it is perpendicular to an axis">
+                ${["X", "Y", "Z"].map((a) => `<button type="button" class="ctl-segment" data-axis="${a}">Normal ${a}</button>`).join("")}
+              </div>` : ""}
+              ${["X", "Y", "Z"].map((a, i) => cropSliderHtml(`crop-${shape.type}-p${i}`, `Position ${a}`, 0, 100, shape.center[i] * 100)).join("")}
+              ${ui.sizes.map(([label, i, scale, max]) => cropSliderHtml(`crop-${shape.type}-s${i}`, label, 1, max, shape.size[i] / scale)).join("")}
+              ${["X", "Y", "Z"].map((a, i) => cropSliderHtml(`crop-${shape.type}-r${i}`, `Rotate ${a}`, -180, 180, shape.rotation[i])).join("")}
+            </div>
+          </div>`;
+      }
 
       const arrowSvg = `<svg class="ctl-panel-arrow" viewBox="0 0 8 8" width="8" height="8"><path d="M2 0l4 4-4 4z" fill="currentColor"/></svg>`;
       const collapsibleArrow = arrowSvg.replace('class="ctl-panel-arrow"', 'class="ctl-collapsible-arrow"');
@@ -1070,6 +1147,17 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
               </div>
             </div>
           </div>
+
+          ${canCrop ? `<div class="ctl-collapsible${uiState.cropOpen ? " open" : ""}" data-key="cropOpen">
+            <button type="button" class="ctl-collapsible-header" title="Remove parts of the volume from the 3D view with a plane, a cube, a cylinder or a sphere: the inside of the shape or everything outside it">
+              ${collapsibleArrow}
+              <span class="ctl-eyebrow">Crop</span>
+              <span class="ctl-crop-count" data-role="crop-count"></span>
+            </button>
+            <div class="ctl-collapsible-body">
+              ${cropList.map(cropShapeHtml).join("")}
+            </div>
+          </div>` : ""}
 
           <div class="ctl-collapsible${uiState.infoOpen ? " open" : ""}" data-key="infoOpen">
             <button type="button" class="ctl-collapsible-header">
@@ -1740,6 +1828,49 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
       wireClipAxis("X", dimX, (lo, hi) => { renderer.clipMin[0] = lo; renderer.clipMax[0] = hi; dirty(); });
       wireClipAxis("Y", dimY, (lo, hi) => { renderer.clipMin[1] = lo; renderer.clipMax[1] = hi; dirty(); });
       wireClipAxis("Z", dimZ, (lo, hi) => { renderer.clipMin[2] = lo; renderer.clipMax[2] = hi; dirty(); });
+
+      // --- Crop section: every change sends the whole list to the renderer ---
+      if (canCrop) {
+        const countEl = panel.querySelector('[data-role="crop-count"]');
+        const applyCrop = () => {
+          renderer.setCropShapes(cropList.map((s) => ({ ...s, center: [...s.center], size: [...s.size], rotation: [...s.rotation] })));
+          dirty();
+          const on = cropList.filter((s) => s.enabled).length;
+          countEl.textContent = on ? `${on} on` : "";
+        };
+        const pct = (v) => `${Math.round(v)}%`;
+        const deg = (v) => `${Math.round(v)}\u00b0`;
+        for (const shape of cropList) {
+          const t = shape.type;
+          const root = panel.querySelector(`.ctl-crop[data-crop="${t}"]`);
+          root.querySelector(`[data-role="crop-on-${t}"]`).addEventListener("change", (evt) => {
+            shape.enabled = evt.target.checked;
+            root.querySelector(".ctl-crop-body").hidden = !shape.enabled;
+            applyCrop();
+          });
+          root.querySelectorAll(`[data-role="crop-mode-${t}"] .ctl-segment`).forEach((btn) => btn.addEventListener("click", () => {
+            shape.mode = btn.dataset.mode;
+            root.querySelectorAll(`[data-role="crop-mode-${t}"] .ctl-segment`).forEach((b) => b.classList.toggle("active", b === btn));
+            applyCrop();
+          }));
+          for (let i = 0; i < 3; i++) {
+            wireSlider(root, `crop-${t}-p${i}`, (v) => { shape.center[i] = v / 100; applyCrop(); }, pct);
+            wireSlider(root, `crop-${t}-r${i}`, (v) => { shape.rotation[i] = v; applyCrop(); }, deg);
+          }
+          for (const [, i, scale] of CROP_UI[t].sizes) wireSlider(root, `crop-${t}-s${i}`, (v) => { shape.size[i] = v * scale; applyCrop(); }, pct);
+          if (t === "plane") {
+            root.querySelectorAll('[data-role="crop-axis-plane"] .ctl-segment').forEach((btn) => btn.addEventListener("click", () => {
+              const rot = PLANE_AXIS_ROTATION[btn.dataset.axis];
+              rot.forEach((v, i) => { // moving the sliders also repaints them (and applies the rotation)
+                const input = root.querySelector(`[data-role="slider-crop-plane-r${i}"]`);
+                input.value = v;
+                input.dispatchEvent(new Event("input"));
+              });
+            }));
+          }
+        }
+        countEl.textContent = cropList.some((s) => s.enabled) ? `${cropList.filter((s) => s.enabled).length} on` : "";
+      }
 
       // An animation changes the transfer function (colours, opacity curve, window, density): the panel follows.
       let tfFrame = 0;

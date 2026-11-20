@@ -1,44 +1,130 @@
-diff --git a/lib/kiln-render.js b/lib/kiln-render.js
-index c45068c..4ae3556 100644
---- a/lib/kiln-render.js
-+++ b/lib/kiln-render.js
-@@ -6149,7 +6149,10 @@ function defineUniformStruct(fields) {
-   offset = alignUp(offset, maxAlign);
-   return { fields: lines.join("\n"), offsets, size: offset };
+diff --git a/src/core/config.ts b/src/core/config.ts
+index 3eb6fb5..b2a5c29 100644
+--- a/src/core/config.ts
++++ b/src/core/config.ts
+@@ -154,6 +154,11 @@ export class DatasetConfig {
+     return this.levels?.[lod]?.exponent ?? [lod, lod, lod];
+   }
+ 
++  /** Converter-supplied LOD-selection scale of `lod` (see PyramidLevel.errorScale), if any. */
++  levelErrorScale(lod: number): number | undefined {
++    return this.levels?.[lod]?.errorScale;
++  }
++
+   /** Finest-grid cells (LOD-0 bricks) one brick of `lod` covers, per axis. */
+   levelSpanCells(lod: number): Vec3 {
+     return this.levelExponent(lod).map(e => 1 << e) as Vec3;
+diff --git a/src/core/pyramid.ts b/src/core/pyramid.ts
+index 3319c58..3ac24da 100644
+--- a/src/core/pyramid.ts
++++ b/src/core/pyramid.ts
+@@ -19,6 +19,12 @@ export interface PyramidLevel {
+   spacing: Vec3;
+   /** Physical position of voxel (0,0,0) per axis, after group transforms. */
+   origin: Vec3;
++  /**
++   * Local patch: optional LOD-selection scale written by the converter (effective voxel size relative
++   * to the largest level-0 voxel). Lets levels that coarsen one axis at a time switch at distinct
++   * distances instead of all sharing the max-axis error. Absent = derived from `exponent`.
++   */
++  errorScale?: number;
  }
--const MAX_LOD_LEVELS = 12;
-+// Local patch: raised from 12. Fine LOD ladders (several levels per 2x octave,
-+// see errorScale below) need more levels. Only costs 16 B per level in the
-+// lodScales uniform arrays; the indirection texel stores lod+1 in 8 bits.
-+const MAX_LOD_LEVELS = 32;
- const COMPUTE_UNIFORMS = defineUniformStruct([
-   { name: "inverseViewProj", type: "mat4x4f" },
-   { name: "cameraPos", type: "vec3f" },
-@@ -9468,6 +9471,12 @@ class StreamingManager {
-   getVoxelWorldSize(lod) {
-     const normalizedSize = this.config.normalizedSize;
-     const dims = this.config.dimensions;
-+    // Local patch: converter-supplied scale (lets levels that coarsen one axis at a
-+    // time switch at distinct distances instead of all sharing the max-axis error).
-+    const errorScale = this.config.levels?.[lod]?.errorScale;
-+    if (errorScale !== void 0) {
-+      return Math.max(...[0, 1, 2].map((a) => normalizedSize[a] / dims[a])) * errorScale;
-+    }
-     const exponent = this.config.levelExponent(lod);
-     const improvable = [0, 1, 2].filter((a) => exponent[a] > 0);
-     const axes = improvable.length > 0 ? improvable : [0, 1, 2];
-@@ -11705,6 +11714,14 @@ class ShardedDataProvider {
+ 
+ /** One level as read from metadata, all vectors in [x, y, z] order. */
+diff --git a/src/data/sharded-provider.ts b/src/data/sharded-provider.ts
+index 9b6366b..6cf605e 100644
+--- a/src/data/sharded-provider.ts
++++ b/src/data/sharded-provider.ts
+@@ -37,6 +37,8 @@ interface ShardedVolumeJson {
+     brickCount: number;
+     binFile: string;
+     indexFile: string;
++    /** Local patch: optional LOD-selection scale (see PyramidLevel.errorScale) */
++    errorScale?: number;
+   }[];
+   format: 'uint8' | 'uint16';
+   packed: true;
+@@ -144,6 +146,13 @@ export class ShardedDataProvider implements DataProvider {
      const pyramidBuild = buildPyramid(
-       raw.levels.map((level, i) => ({ dims: level.dimensions, scale: i === 0 ? raw.voxelSpacing : void 0 }))
+       raw.levels.map((level, i) => ({ dims: level.dimensions, scale: i === 0 ? raw.voxelSpacing : undefined })),
      );
 +    // Local patch: optional per-level LOD-selection scale written by the converter
 +    // (effective voxel size relative to the largest level-0 voxel). Absent = old behaviour.
 +    raw.levels.forEach((level, i) => {
 +      const es = level.errorScale;
-+      if (pyramidBuild.levels[i] && typeof es === "number" && Number.isFinite(es) && es > 0) {
-+        pyramidBuild.levels[i].errorScale = es;
-+      }
++      const built = pyramidBuild.levels[i];
++      if (built && typeof es === 'number' && Number.isFinite(es) && es > 0) built.errorScale = es;
 +    });
-     if (this.pyramidPolicy === "native" && pyramidBuild.issues.length > 0) {
+     if (this.pyramidPolicy === 'native' && pyramidBuild.issues.length > 0) {
        throw new UnsupportedDatasetError([...pyramidBuild.issues, LEGACY_HINT]);
      }
+diff --git a/src/shaders/uniform-layout.ts b/src/shaders/uniform-layout.ts
+index 51b1157..304536d 100644
+--- a/src/shaders/uniform-layout.ts
++++ b/src/shaders/uniform-layout.ts
+@@ -63,7 +63,10 @@ function defineUniformStruct<T extends string>(
+ }
+ 
+ /** Per-level scale table length; datasets with more levels are rejected at load. */
+-export const MAX_LOD_LEVELS = 12;
++// Local patch: raised from 12. Fine LOD ladders (several levels per 2x octave, see errorScale)
++// need more levels. Only costs 16 B per level in the lodScales uniform arrays; the indirection
++// texel stores lod+1 in 8 bits.
++export const MAX_LOD_LEVELS = 32;
+ 
+ // ---------------------------------------------------------------------------
+ // Compute shader uniforms (480 bytes)
+diff --git a/src/streaming/streaming-manager.ts b/src/streaming/streaming-manager.ts
+index 60bb71a..bcdad7a 100644
+--- a/src/streaming/streaming-manager.ts
++++ b/src/streaming/streaming-manager.ts
+@@ -1718,6 +1718,12 @@ export class StreamingManager {
+   private getVoxelWorldSize(lod: number): number {
+     const normalizedSize = this.config.normalizedSize;
+     const dims = this.config.dimensions;
++    // Local patch: converter-supplied scale (lets levels that coarsen one axis at a time switch at
++    // distinct distances instead of all sharing the max-axis error).
++    const errorScale = this.config.levelErrorScale(lod);
++    if (errorScale !== undefined) {
++      return Math.max(...[0, 1, 2].map(a => normalizedSize[a]! / dims[a]!)) * errorScale;
++    }
+     const exponent = this.config.levelExponent(lod);
+     const improvable = [0, 1, 2].filter(a => exponent[a]! > 0);
+     const axes = improvable.length > 0 ? improvable : [0, 1, 2];
+diff --git a/test/uniform-layout.test.ts b/test/uniform-layout.test.ts
+index 58ff8ca..177e4b4 100644
+--- a/test/uniform-layout.test.ts
++++ b/test/uniform-layout.test.ts
+@@ -12,7 +12,7 @@ import { COMPUTE_UNIFORMS, LABEL_UNIFORMS, SLICE_UNIFORMS } from '../src/shaders
+ 
+ describe('COMPUTE_UNIFORMS layout', () => {
+   it('has the expected total size (multiple of 16)', () => {
+-    expect(COMPUTE_UNIFORMS.size).toBe(496);
++    expect(COMPUTE_UNIFORMS.size).toBe(816);
+     expect(COMPUTE_UNIFORMS.size % 16).toBe(0);
+   });
+ 
+@@ -28,10 +28,10 @@ describe('COMPUTE_UNIFORMS layout', () => {
+       channelWindowCenter: 240,
+       channelWindowWidth: 256,
+       lodScales: 272,
+-      shading: 464,
+-      gradientOpacity: 468,
+-      orthographic: 472,
+-      pickPixel: 480,
++      shading: 784,         // after the 32 lodScales vec4s
++      gradientOpacity: 788,
++      orthographic: 792,
++      pickPixel: 800,
+     });
+   });
+ 
+@@ -44,7 +44,7 @@ describe('COMPUTE_UNIFORMS layout', () => {
+ 
+ describe('SLICE_UNIFORMS layout', () => {
+   it('has the expected total size (multiple of 16)', () => {
+-    expect(SLICE_UNIFORMS.size).toBe(432);
++    expect(SLICE_UNIFORMS.size).toBe(752);
+     expect(SLICE_UNIFORMS.size % 16).toBe(0);
+   });
+ 

@@ -1,0 +1,817 @@
+diff --git a/src/core/crop.ts b/src/core/crop.ts
+new file mode 100644
+index 0000000..7041432
+--- /dev/null
++++ b/src/core/crop.ts
+@@ -0,0 +1,177 @@
++/**
++ * Crop shapes — plane, box, cylinder and sphere that remove part of the volume from the 3D render.
++ *
++ * A shape removes either its inside (`mode: 'inside'`: a hole is cut) or everything outside it
++ * (`mode: 'outside'`: only what lies inside the shape is kept). Several shapes combine by union of
++ * what they remove, so a voxel is drawn only if no enabled shape removes it. Crop shapes act on the
++ * 3D ray-marched modes (DVR, MIP, ISO, LOD); the slice planes are not cropped.
++ *
++ * Coordinates:
++ *  - `center` is a fraction 0..1 of the volume box (like clipMin/clipMax); for a plane it is a point on the plane.
++ *  - `size` is in world units, where the longest side of the volume box is 1 (so a sphere of radius 0.5
++ *    just fits a cubic volume, whatever its voxel spacing): box = half extents (x, y, z), cylinder =
++ *    [radius, half height, unused], sphere = [radius, unused, unused], plane = unused.
++ *  - `rotation` is Euler angles in degrees, applied as Rz · Ry · Rx. The shape's local axes are the
++ *    rotated X, Y, Z: the cylinder's axis is local Z and the plane's normal is local +Z. The plane's
++ *    "inside" is its back, the side local -Z, so with `mode: 'inside'` the side the normal points to is kept.
++ *
++ * This file also holds the packing that the compute shader reads (see crop.wgsl) and a CPU
++ * implementation of the same signed distances, used by the tests and by hosts that pick points in 3D.
++ */
++
++export type CropShapeType = 'plane' | 'box' | 'cylinder' | 'sphere';
++export type CropMode = 'inside' | 'outside';
++type Vec3 = [number, number, number];
++
++export interface CropShape {
++  type: CropShapeType;
++  /** A disabled shape stays in the list but removes nothing (default true). */
++  enabled?: boolean;
++  /** Which part is removed: the shape's 'inside' (default) or everything 'outside' it. */
++  mode?: CropMode;
++  /** Centre as a fraction 0..1 of the volume box (default [0.5, 0.5, 0.5]). */
++  center?: Vec3;
++  /** Extent in world units (longest volume side = 1); meaning depends on the type, see above. */
++  size?: Vec3;
++  /** Euler angles in degrees (default [0, 0, 0]). */
++  rotation?: Vec3;
++}
++
++/** A CropShape with every field filled in and sanitised. */
++export interface ResolvedCropShape {
++  type: CropShapeType;
++  enabled: boolean;
++  mode: CropMode;
++  center: Vec3;
++  size: Vec3;
++  rotation: Vec3;
++}
++
++/** The shader's shape table holds this many shapes; further ones are dropped. */
++export const MAX_CROP_SHAPES = 8;
++/** vec4f slots one shape takes in the uniform buffer: kind, centre, size and the three local axes. */
++export const CROP_SHAPE_VECS = 6;
++
++export const CROP_TYPE_IDS: Record<CropShapeType, number> = { plane: 1, box: 2, cylinder: 3, sphere: 4 };
++
++const DEFAULT_SIZE: Record<CropShapeType, Vec3> = {
++  plane: [0, 0, 0],
++  box: [0.25, 0.25, 0.25],
++  cylinder: [0.25, 0.25, 0],
++  sphere: [0.25, 0, 0],
++};
++
++const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
++
++function vec3(v: unknown, fallback: Vec3, lo: number, hi: number): Vec3 {
++  const a = Array.isArray(v) ? v : [];
++  return [0, 1, 2].map((i) => (finite(a[i]) ? Math.min(hi, Math.max(lo, a[i] as number)) : fallback[i]!)) as Vec3;
++}
++
++/** Fills in defaults and clamps values; null when `shape` is not a known shape type. */
++export function resolveCropShape(shape: CropShape | null | undefined): ResolvedCropShape | null {
++  if (!shape || !Object.prototype.hasOwnProperty.call(CROP_TYPE_IDS, shape.type)) return null;
++  const type = shape.type;
++  return {
++    type,
++    enabled: shape.enabled !== false,
++    mode: shape.mode === 'outside' ? 'outside' : 'inside',
++    center: vec3(shape.center, [0.5, 0.5, 0.5], -4, 5),
++    size: vec3(shape.size, DEFAULT_SIZE[type], 0, 8),
++    rotation: vec3(shape.rotation, [0, 0, 0], -3600, 3600),
++  };
++}
++
++/** Resolves a list (invalid entries are skipped, at most MAX_CROP_SHAPES are kept). */
++export function resolveCropShapes(shapes: readonly (CropShape | null | undefined)[] | null | undefined): ResolvedCropShape[] {
++  const out: ResolvedCropShape[] = [];
++  for (const s of shapes ?? []) {
++    const r = resolveCropShape(s);
++    if (r && out.length < MAX_CROP_SHAPES) out.push(r);
++  }
++  return out;
++}
++
++/** The shape's local X, Y and Z axes in world space (the columns of Rz · Ry · Rx), from Euler angles in degrees. */
++export function cropAxes(rotation: Vec3): [Vec3, Vec3, Vec3] {
++  const [rx, ry, rz] = rotation.map((d) => (d * Math.PI) / 180) as Vec3;
++  const [cx, sx, cy, sy, cz, sz] = [Math.cos(rx), Math.sin(rx), Math.cos(ry), Math.sin(ry), Math.cos(rz), Math.sin(rz)];
++  const rot = (v: Vec3): Vec3 => {
++    let [x, y, z] = v;
++    [y, z] = [y * cx - z * sx, y * sx + z * cx]; // Rx
++    [x, z] = [x * cy + z * sy, -x * sy + z * cy]; // Ry
++    [x, y] = [x * cz - y * sz, x * sz + y * cz]; // Rz
++    return [x, y, z];
++  };
++  return [rot([1, 0, 0]), rot([0, 1, 0]), rot([0, 0, 1])];
++}
++
++/** World-space centre of a shape (the volume box is centred on the origin, extents `normalizedSize`). */
++function worldCentre(shape: ResolvedCropShape, normalizedSize: Vec3): Vec3 {
++  return shape.center.map((c, i) => (c - 0.5) * normalizedSize[i]!) as Vec3;
++}
++
++/**
++ * Writes the enabled shapes in the layout of crop.wgsl into `out` (MAX_CROP_SHAPES * CROP_SHAPE_VECS * 4
++ * floats) and returns how many were written. Per shape, six vec4f:
++ *   0: (type id, 1 if the outside is removed, 0, 0)   1: world centre   2: size
++ *   3, 4, 5: the local X, Y, Z axes in world space (so local = (dot(axisX, d), dot(axisY, d), dot(axisZ, d)))
++ */
++export function packCropShapes(shapes: readonly ResolvedCropShape[], normalizedSize: Vec3, out: Float32Array): number {
++  out.fill(0);
++  let n = 0;
++  for (const s of shapes) {
++    if (!s.enabled || n >= MAX_CROP_SHAPES) continue;
++    const base = n * CROP_SHAPE_VECS * 4;
++    const [ax, ay, az] = cropAxes(s.rotation);
++    out.set([CROP_TYPE_IDS[s.type], s.mode === 'outside' ? 1 : 0, 0, 0], base);
++    out.set(worldCentre(s, normalizedSize), base + 4);
++    out.set(s.size, base + 8);
++    out.set(ax, base + 12);
++    out.set(ay, base + 16);
++    out.set(az, base + 20);
++    n++;
++  }
++  return n;
++}
++
++/**
++ * Signed distance from world position `p` to the shape's surface: negative inside, positive outside
++ * (exact for the plane and the sphere, a close bound elsewhere). CPU twin of cropSignedDistance() in crop.wgsl.
++ */
++export function cropSignedDistance(shape: ResolvedCropShape, normalizedSize: Vec3, p: Vec3): number {
++  const c = worldCentre(shape, normalizedSize);
++  const d: Vec3 = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
++  const [ax, ay, az] = cropAxes(shape.rotation);
++  const dot = (a: Vec3) => a[0] * d[0] + a[1] * d[1] + a[2] * d[2];
++  const l: Vec3 = [dot(ax), dot(ay), dot(az)];
++  const [sx, sy, sz] = shape.size;
++  switch (shape.type) {
++    case 'plane':
++      return l[2];
++    case 'box': {
++      const q = [Math.abs(l[0]) - sx, Math.abs(l[1]) - sy, Math.abs(l[2]) - sz];
++      const outer = Math.hypot(Math.max(q[0]!, 0), Math.max(q[1]!, 0), Math.max(q[2]!, 0));
++      return outer + Math.min(Math.max(q[0]!, q[1]!, q[2]!), 0);
++    }
++    case 'cylinder': {
++      const q = [Math.hypot(l[0], l[1]) - sx, Math.abs(l[2]) - sy];
++      return Math.min(Math.max(q[0]!, q[1]!), 0) + Math.hypot(Math.max(q[0]!, 0), Math.max(q[1]!, 0));
++    }
++    default:
++      return Math.hypot(l[0], l[1], l[2]) - sx;
++  }
++}
++
++/** Whether `shape` removes world position `p` (a disabled shape removes nothing). CPU twin of the shader's test. */
++export function cropShapeRemoves(shape: ResolvedCropShape, normalizedSize: Vec3, p: Vec3): boolean {
++  if (!shape.enabled) return false;
++  const sd = cropSignedDistance(shape, normalizedSize, p);
++  return shape.mode === 'outside' ? sd > 0 : sd <= 0;
++}
++
++/** Whether any shape removes world position `p` — for picking points in 3D the way the renderer shows them. */
++export function isCropRemoved(shapes: readonly CropShape[] | null | undefined, normalizedSize: Vec3, p: Vec3): boolean {
++  for (const s of resolveCropShapes(shapes)) if (cropShapeRemoves(s, normalizedSize, p)) return true;
++  return false;
++}
+diff --git a/src/core/renderer.ts b/src/core/renderer.ts
+index cba0cf1..10ba5da 100644
+--- a/src/core/renderer.ts
++++ b/src/core/renderer.ts
+@@ -9,6 +9,8 @@ import { TransferFunction } from './transfer-function.js';
+ import { VolumeResources } from './volume-resources.js';
+ import { wireframeShader, axisShader, buildComputeShader, blitShader, accumulateShader, buildSlicePlanesShader } from '../shaders/index.js';
+ import { COMPUTE_UNIFORMS, SLICE_UNIFORMS, MAX_LOD_LEVELS } from '../shaders/uniform-layout.js';
++import { resolveCropShapes, packCropShapes, cropShapeRemoves, MAX_CROP_SHAPES, CROP_SHAPE_VECS } from './crop.js';
++import type { CropShape, ResolvedCropShape } from './crop.js';
+ import type { DatasetConfig } from './config.js';
+ import { RayVisibility } from '../streaming/ray-visibility.js';
+ import { PICK_BYTES } from '../labels/label-gpu.js';
+@@ -114,6 +116,11 @@ export class Renderer {
+   clipMin = new Float32Array([0, 0, 0]);
+   clipMax = new Float32Array([1, 1, 1]);
+ 
++  // Crop shapes (plane / box / cylinder / sphere), see core/crop.ts. Set them with setCropShapes().
++  private cropShapes: ResolvedCropShape[] = [];
++  // JSON of cropShapes, so syncLook() can tell whether another renderer's shapes differ
++  private cropKey = '[]';
++
+   // Slice planes — active when volumeRenderMode === 'slice'
+   sliceX = 0.5;
+   sliceY = 0.5;
+@@ -222,6 +229,10 @@ export class Renderer {
+   private readonly invVPScratch = new Float32Array(16);
+   private readonly computeUniformScratch = new Float32Array(COMPUTE_UNIFORMS.size / 4);
+   private readonly computeUniformView = new DataView(this.computeUniformScratch.buffer);
++  // the crop table inside the compute uniforms (only rewritten when the shapes change)
++  private readonly cropTable = new Float32Array(
++    this.computeUniformScratch.buffer, COMPUTE_UNIFORMS.offsets.cropShapes, MAX_CROP_SHAPES * CROP_SHAPE_VECS * 4,
++  );
+   private readonly accumScratch = new Float32Array(4);
+   private readonly sliceUniformScratch = new Float32Array(SLICE_UNIFORMS.size / 4);
+   private readonly sliceUniformView = new DataView(this.sliceUniformScratch.buffer);
+@@ -453,6 +464,34 @@ export class Renderer {
+     this.onDirty?.();
+   }
+ 
++  /**
++   * Replaces the crop shapes: parts of the volume (plane, box, cylinder, sphere; the inside or the
++   * outside of each) that the 3D view leaves out. Shapes that are disabled stay in the list but remove
++   * nothing; at most MAX_CROP_SHAPES are kept. An empty list or null removes all cropping.
++   * Returns the number of shapes now in the list. See core/crop.ts for the coordinates.
++   */
++  setCropShapes(shapes: readonly CropShape[] | null | undefined): number {
++    this.cropShapes = resolveCropShapes(shapes);
++    this.cropKey = JSON.stringify(this.cropShapes);
++    const active = packCropShapes(this.cropShapes, this.config.normalizedSize, this.cropTable);
++    this.computeUniformView.setUint32(COMPUTE_UNIFORMS.offsets.cropCount, active, true);
++    this.resetAccumulation();
++    return this.cropShapes.length;
++  }
++
++  /** A copy of the crop shapes, with every field filled in (disabled ones included). */
++  getCropShapes(): ResolvedCropShape[] {
++    return this.cropShapes.map((s) => ({
++      ...s, center: [...s.center], size: [...s.size], rotation: [...s.rotation],
++    }));
++  }
++
++  /** Whether the crop shapes remove a world position (the 3D view leaves it out): for picking points the way they are drawn. */
++  isCropRemoved(p: [number, number, number]): boolean {
++    for (const s of this.cropShapes) if (cropShapeRemoves(s, this.config.normalizedSize, p)) return true;
++    return false;
++  }
++
+   /** Reset temporal accumulation (call when rendering parameters change) */
+   resetAccumulation(): void {
+     for (const set of this.scaleSets.values()) {
+@@ -480,6 +519,11 @@ export class Renderer {
+         changed = true;
+       }
+     }
++    // the crop shapes are part of the shared look too
++    if (this.cropKey !== src.cropKey) {
++      this.setCropShapes(src.getCropShapes());
++      changed = true;
++    }
+     return changed;
+   }
+ 
+diff --git a/src/engine.ts b/src/engine.ts
+index e83510f..91519c8 100644
+--- a/src/engine.ts
++++ b/src/engine.ts
+@@ -10,6 +10,7 @@ import type { LoadMilestones } from './core/milestones.js';
+ import { jsHeapBytes } from './core/memory-stats.js';
+ import type { MemoryStats } from './core/memory-stats.js';
+ import type { PyramidLevel, PyramidPolicy } from './core/pyramid.js';
++import type { CropShape } from './core/crop.js';
+ import { Renderer, VolumeRenderMode } from './core/renderer.js';
+ import { VolumeResources } from './core/volume-resources.js';
+ import { TransferFunction, TFPreset } from './core/transfer-function.js';
+@@ -63,6 +64,8 @@ export interface EngineOptions {
+   clipMin?: [number, number, number];
+   /** Axis-aligned clip maximum, normalised 0–1 */
+   clipMax?: [number, number, number];
++  /** Crop shapes that remove parts of the volume from the 3D view (see core/crop.ts) */
++  crop?: CropShape[];
+   /** Transfer function colour preset */
+   tfPreset?: TFPreset;
+   /** Local patch: custom colour map as colour stops (applied after tfPreset, switches the preset to 'custom') */
+@@ -446,6 +449,9 @@ export class KilnEngine {
+       renderer.clipMax.set(options.clipMax);
+       renderer.resetAccumulation();
+     }
++    if (options.crop !== undefined) {
++      renderer.setCropShapes(options.crop);
++    }
+     if (options.tfPreset !== undefined) {
+       transferFunction.setPreset(options.tfPreset);
+       renderer.resetAccumulation();
+@@ -667,6 +673,7 @@ export class KilnEngine {
+     renderer.floatMax = this.metadata.dataRange?.[1] ?? old.floatMax;
+     renderer.clipMin.set(old.clipMin);
+     renderer.clipMax.set(old.clipMax);
++    renderer.setCropShapes(old.getCropShapes());
+     renderer.sliceX = old.sliceX;
+     renderer.sliceY = old.sliceY;
+     renderer.sliceZ = old.sliceZ;
+diff --git a/src/index.ts b/src/index.ts
+index d2a494e..45a641f 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -27,6 +27,10 @@ export type { VolumeRenderMode } from './core/renderer.js';
+ export type { TFPreset, OpacityPoint, ColorStop } from './core/transfer-function.js';
+ export type { Projection, UpAxis } from './core/camera.js';
+ 
++// Crop shapes (plane, box, cylinder, sphere) that remove parts of the volume from the 3D view
++export type { CropShape, CropShapeType, CropMode, ResolvedCropShape } from './core/crop.js';
++export { isCropRemoved, cropSignedDistance, resolveCropShapes, MAX_CROP_SHAPES } from './core/crop.js';
++
+ // Data provider interface (implement this to support custom formats)
+ export type {
+   SourceSelection,
+diff --git a/src/shaders/crop.wgsl b/src/shaders/crop.wgsl
+new file mode 100644
+index 0000000..2b10745
+--- /dev/null
++++ b/src/shaders/crop.wgsl
+@@ -0,0 +1,87 @@
++// Crop shapes (plane, box, cylinder, sphere): parts of the volume that are not drawn.
++// Compute shader only (reads uniforms.cropCount / uniforms.cropShapes). The shape table is packed by
++// packCropShapes() in core/crop.ts: per shape CROP_SHAPE_VECS vec4f
++//   0: (type id, 1 = the outside is removed, -, -)   1: world centre   2: size
++//   3, 4, 5: the local X, Y, Z axes in world space
++// Everything is in world space (the volume box is centred on the origin, longest side 1).
++
++const CROP_PLANE: u32 = 1u;
++const CROP_BOX: u32 = 2u;
++const CROP_CYLINDER: u32 = 3u;
++
++// Signed distance to the surface of shape i: negative inside, positive outside.
++fn cropSignedDistance(i: u32, pos: vec3f) -> f32 {
++    let base = i * CROP_SHAPE_VECS;
++    let kind = u32(uniforms.cropShapes[base].x);
++    let d = pos - uniforms.cropShapes[base + 1u].xyz;
++    let size = uniforms.cropShapes[base + 2u].xyz;
++    let local = vec3f(
++        dot(uniforms.cropShapes[base + 3u].xyz, d),
++        dot(uniforms.cropShapes[base + 4u].xyz, d),
++        dot(uniforms.cropShapes[base + 5u].xyz, d)
++    );
++
++    if (kind == CROP_PLANE) {
++        return local.z;
++    }
++    if (kind == CROP_BOX) {
++        let q = abs(local) - size;
++        return length(max(q, vec3f(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
++    }
++    if (kind == CROP_CYLINDER) {
++        // axis = local Z; size = (radius, half height)
++        let q = vec2f(length(local.xy) - size.x, abs(local.z) - size.y);
++        return min(max(q.x, q.y), 0.0) + length(max(q, vec2f(0.0)));
++    }
++    return length(local) - size.x;   // sphere
++}
++
++// True when shape i removes the position.
++fn cropShapeRemoves(i: u32, pos: vec3f) -> bool {
++    let sd = cropSignedDistance(i, pos);
++    if (uniforms.cropShapes[i * CROP_SHAPE_VECS].y > 0.5) {
++        return sd > 0.0;   // 'outside': only the inside is kept
++    }
++    return sd <= 0.0;      // 'inside': the inside is cut away
++}
++
++// True when any enabled shape removes the position (no shapes: always false, a loop of zero iterations).
++fn cropIsRemoved(pos: vec3f) -> bool {
++    for (var i = 0u; i < uniforms.cropCount; i++) {
++        if (cropShapeRemoves(i, pos)) { return true; }
++    }
++    return false;
++}
++
++// First kept position between a removed one (tRemoved) and a kept one (tKept) on the ray, by bisection.
++fn refineCropBoundary(rayOrigin: vec3f, rayDir: vec3f, tRemoved: f32, tKept: f32) -> f32 {
++    var lo = tRemoved;
++    var hi = tKept;
++    for (var i = 0u; i < 8u; i++) {
++        let mid = (lo + hi) * 0.5;
++        if (cropIsRemoved(rayOrigin + rayDir * mid)) { lo = mid; } else { hi = mid; }
++    }
++    return hi;
++}
++
++// Normal of the cut face at a position on the boundary of the cropped region: the surface of the nearest
++// shape, pointing out of the material that is kept (into the part that was cut away).
++fn cropBoundaryNormal(pos: vec3f) -> vec3f {
++    var best = 1e30;
++    var nearest = 0u;
++    for (var i = 0u; i < uniforms.cropCount; i++) {
++        let a = abs(cropSignedDistance(i, pos));
++        if (a < best) { best = a; nearest = i; }
++    }
++    let e = 0.002;
++    let g = vec3f(
++        cropSignedDistance(nearest, pos + vec3f(e, 0.0, 0.0)) - cropSignedDistance(nearest, pos - vec3f(e, 0.0, 0.0)),
++        cropSignedDistance(nearest, pos + vec3f(0.0, e, 0.0)) - cropSignedDistance(nearest, pos - vec3f(0.0, e, 0.0)),
++        cropSignedDistance(nearest, pos + vec3f(0.0, 0.0, e)) - cropSignedDistance(nearest, pos - vec3f(0.0, 0.0, e))
++    );
++    if (length(g) < 1e-9) { return vec3f(0.0, 0.0, 1.0); }
++    // 'inside' removed: the kept material is where the distance grows, so it faces down the gradient;
++    // 'outside' removed: the kept material is inside and its surface faces up the gradient.
++    if (uniforms.cropShapes[nearest * CROP_SHAPE_VECS].y > 0.5) { return normalize(g); }
++    return -normalize(g);
++}
+diff --git a/src/shaders/dvr.wgsl b/src/shaders/dvr.wgsl
+index 6d780df..691bddf 100644
+--- a/src/shaders/dvr.wgsl
++++ b/src/shaders/dvr.wgsl
+@@ -98,6 +98,12 @@ fn rayMarchDVR(
+             if (tSample > brick.tEnd) { break; }
+ 
+             let pos = rayOrigin + rayDir * tSample;
++            // crop shapes: a removed sample is neither fetched nor composited
++            if (cropIsRemoved(pos)) {
++                if (labelCount > 0u) { labelMarchSkip(&lm); }
++                tSample += brick.stepSize;
++                continue;
++            }
+             let voxel = normalizedToVoxel(pos, normalizedSize, datasetSize);
+ 
+             // Label surfaces starting here lie in front of this sample
+diff --git a/src/shaders/index.ts b/src/shaders/index.ts
+index 2fbcfd7..d0449a0 100644
+--- a/src/shaders/index.ts
++++ b/src/shaders/index.ts
+@@ -5,6 +5,7 @@
+ 
+ import { CONFIG } from '../core/config.js';
+ import { COMPUTE_UNIFORMS, LABEL_UNIFORMS, MAX_LABEL_LAYERS, SLICE_UNIFORMS } from './uniform-layout.js';
++import { CROP_SHAPE_VECS } from '../core/crop.js';
+ 
+ // Import WGSL shader sources
+ import commonWGSL from './common.wgsl?raw';
+@@ -15,6 +16,7 @@ import dvrWGSL from './dvr.wgsl?raw';
+ import mipWGSL from './mip.wgsl?raw';
+ import isoWGSL from './iso.wgsl?raw';
+ import lodDebugWGSL from './lod-debug.wgsl?raw';
++import cropWGSL from './crop.wgsl?raw';
+ import wireframeWGSL from './wireframe.wgsl?raw';
+ import axisWGSL from './axis.wgsl?raw';
+ import blitWGSL from './blit.wgsl?raw';
+@@ -82,6 +84,8 @@ fn rayJitter() -> f32 {
+     return rand(raySeed + uniforms.frameIndex);
+ }
+ 
++const CROP_SHAPE_VECS: u32 = ${CROP_SHAPE_VECS}u;
++${cropWGSL}
+ ${labelMarchWGSL}
+ ${dvrWGSL}
+ ${mipWGSL}
+diff --git a/src/shaders/iso.wgsl b/src/shaders/iso.wgsl
+index 397de45..24c4c0d 100644
+--- a/src/shaders/iso.wgsl
++++ b/src/shaders/iso.wgsl
+@@ -22,6 +22,7 @@ fn rayMarchISO(
+ 
+     var prevDensity = 0.0;
+     var prevT = tStart;
++    var prevCropped = false;   // the previous sample was removed by a crop shape
+     var t = tStart;
+     var tSample = -1.0;  // sentinel: not yet initialized
+ 
+@@ -41,6 +42,7 @@ fn rayMarchISO(
+             // scale-sensitive epsilon
+             t = brick.tEnd + max(0.0001, brick.tEnd * 1e-6);
+             prevDensity = 0.0;  // Reset across empty space to avoid false crossings
++            prevCropped = false;
+             continue;
+         }
+ 
+@@ -55,6 +57,15 @@ fn rayMarchISO(
+             if (tSample > brick.tEnd) { break; }
+ 
+             let pos = rayOrigin + rayDir * tSample;
++            // crop shapes: a removed sample is not fetched and counts as empty
++            if (cropIsRemoved(pos)) {
++                if (labelCount > 0u) { labelMarchSkip(&lm); }
++                prevDensity = 0.0;
++                prevT = tSample;
++                prevCropped = true;
++                tSample += brick.stepSize;
++                continue;
++            }
+             let voxel = normalizedToVoxel(pos, normalizedSize, datasetSize);
+             if (labelCount > 0u) {
+                 labels += labelMarchSample(&lm, voxel, brick.cell, voxelsPerUnit, -rayDir, true) * (1.0 - labels.a);
+@@ -66,6 +77,16 @@ fn rayMarchISO(
+             // Apply windowing to density for isosurface comparison
+             let density = applyWindow(normalizedDensity, windowCenter, windowWidth);
+ 
++            // The ray comes out of a cropped region into material above the iso value: the cut face
++            // is the surface, shaded with the normal of the crop shape instead of the density gradient.
++            if (prevCropped && density >= isoValue) {
++                let tCut = refineCropBoundary(rayOrigin, rayDir, prevT, tSample);
++                let cutNormal = cropBoundaryNormal(rayOrigin + rayDir * tCut);
++                let cutColor = textureSampleLevel(tfTexture, tfSampler, vec2f(isoValue, 0.5), 0.0);
++                return vec4f(phongLighting(cutNormal, -rayDir, cutColor.rgb), 1.0);
++            }
++            prevCropped = false;
++
+             // Check for isosurface crossing (isoValue is in windowed space)
+             if (prevDensity < isoValue && density >= isoValue) {
+                 let tSurface = refineIsoSurfaceWindowed(
+diff --git a/src/shaders/label-march.wgsl b/src/shaders/label-march.wgsl
+index b86cd3a..b5572c7 100644
+--- a/src/shaders/label-march.wgsl
++++ b/src/shaders/label-march.wgsl
+@@ -26,6 +26,11 @@ fn labelMarchBrick(m: ptr<function, LabelMarch>, valid: bool, indirection: vec4u
+     }
+ }
+ 
++// A sample removed by a crop shape: the layers' surfaces end there, and start again where the ray comes out
++fn labelMarchSkip(m: ptr<function, LabelMarch>) {
++    for (var i = 0u; i < labelParams.layerCount; i++) { (*m).prev[i] = 0u; }
++}
++
+ // The label layers at one sample. Returns the premultiplied colour of surfaces starting here, to
+ // composite in front of the image sample, and leaves the sample's tint in m.tint. `shade` lights
+ // surfaces from the mask gradient.
+diff --git a/src/shaders/lod-debug.wgsl b/src/shaders/lod-debug.wgsl
+index b449d36..4f4a3ea 100644
+--- a/src/shaders/lod-debug.wgsl
++++ b/src/shaders/lod-debug.wgsl
+@@ -48,6 +48,11 @@ fn rayMarchLOD(
+             if (tSample > brick.tEnd) { break; }
+ 
+             let pos = rayOrigin + rayDir * tSample;
++            // crop shapes: a removed sample is neither fetched nor composited
++            if (cropIsRemoved(pos)) {
++                tSample += brick.stepSize;
++                continue;
++            }
+             let voxel = normalizedToVoxel(pos, normalizedSize, datasetSize);
+             let rawDensity = sampleAtlasAffine(voxel, brick.atlasOffset, brick.atlasScale);
+             let density = clamp((rawDensity - uniforms.floatMin) * floatInvRange, 0.0, 1.0);
+diff --git a/src/shaders/mip.wgsl b/src/shaders/mip.wgsl
+index 5fef09a..bbaa5a3 100644
+--- a/src/shaders/mip.wgsl
++++ b/src/shaders/mip.wgsl
+@@ -79,6 +79,12 @@ fn rayMarchMIP(
+             if (tSample > brick.tEnd) { break; }
+ 
+             let pos = rayOrigin + rayDir * tSample;
++            // crop shapes: a removed sample is neither fetched nor composited
++            if (cropIsRemoved(pos)) {
++                if (labelCount > 0u) { labelMarchSkip(&lm); }
++                tSample += brick.stepSize;
++                continue;
++            }
+             let voxel = normalizedToVoxel(pos, normalizedSize, datasetSize);
+ 
+             if (labelCount > 0u && labels.a < EARLY_EXIT_ALPHA) {
+diff --git a/src/shaders/uniform-layout.ts b/src/shaders/uniform-layout.ts
+index 304536d..1ea1bd6 100644
+--- a/src/shaders/uniform-layout.ts
++++ b/src/shaders/uniform-layout.ts
+@@ -1,5 +1,7 @@
+ /** Single source of truth for WGSL uniform struct layouts. */
+ 
++import { MAX_CROP_SHAPES, CROP_SHAPE_VECS } from '../core/crop.js';
++
+ type WGSLType =
+   | 'f32' | 'u32' | 'i32'
+   | 'vec2f' | 'vec3f' | 'vec4f'
+@@ -69,7 +71,7 @@ function defineUniformStruct<T extends string>(
+ export const MAX_LOD_LEVELS = 32;
+ 
+ // ---------------------------------------------------------------------------
+-// Compute shader uniforms (480 bytes)
++// Compute shader uniforms (1584 bytes)
+ // ---------------------------------------------------------------------------
+ export const COMPUTE_UNIFORMS = defineUniformStruct([
+   { name: 'inverseViewProj', type: 'mat4x4f' },
+@@ -99,6 +101,8 @@ export const COMPUTE_UNIFORMS = defineUniformStruct([
+   { name: 'orthographic',    type: 'u32' },
+   // Pixel whose first label hit is recorded for picking; negative: none
+   { name: 'pickPixel',       type: 'vec2f' },
++  { name: 'cropCount',       type: 'u32' },
++  { name: 'cropShapes',      type: `array<vec4f, ${MAX_CROP_SHAPES * CROP_SHAPE_VECS}>` },
+ ]);
+ 
+ // ---------------------------------------------------------------------------
+diff --git a/src/viewer.ts b/src/viewer.ts
+index cc2eacc..d7927ca 100644
+--- a/src/viewer.ts
++++ b/src/viewer.ts
+@@ -11,6 +11,7 @@ import type { TransferFunction, TFPreset, ColorStop } from './core/transfer-func
+ import type { StreamingManager } from './streaming/streaming-manager.js';
+ import type { DataProvider, SourceSelection, VolumeMetadata } from './data/data-provider.js';
+ import type { LoadMilestones } from './core/milestones.js';
++import type { ResolvedCropShape } from './core/crop.js';
+ import type { MemoryStats } from './core/memory-stats.js';
+ import type { LabelManager, LabelPick } from './labels/label-manager.js';
+ import type { LabelLayerState } from './labels/label-layer.js';
+@@ -53,6 +54,8 @@ export interface ViewerState {
+   projection: Projection;
+   clipMin: [number, number, number];
+   clipMax: [number, number, number];
++  /** Crop shapes, every field filled in (feed it back as the `crop` option) */
++  crop: ResolvedCropShape[];
+   sliceX: number;
+   sliceY: number;
+   sliceZ: number;
+@@ -309,6 +312,7 @@ export class KilnViewer {
+         this.renderer.clipMax[1]!,
+         this.renderer.clipMax[2]!,
+       ],
++      crop: this.renderer.getCropShapes(),
+       sliceX: this.renderer.sliceX,
+       sliceY: this.renderer.sliceY,
+       sliceZ: this.renderer.sliceZ,
+diff --git a/test/crop.test.ts b/test/crop.test.ts
+new file mode 100644
+index 0000000..138c40d
+--- /dev/null
++++ b/test/crop.test.ts
+@@ -0,0 +1,169 @@
++/**
++ * Crop shapes — the CPU side: defaults and sanitising, the packing the compute shader reads, and the
++ * signed distances / removal rule (the shader's twin; the two are compared on a GPU outside this suite).
++ */
++import { describe, it, expect } from 'vitest';
++import {
++  resolveCropShape, resolveCropShapes, packCropShapes, cropAxes, cropSignedDistance, cropShapeRemoves,
++  isCropRemoved, MAX_CROP_SHAPES, CROP_SHAPE_VECS,
++} from '../src/core/crop.js';
++import { COMPUTE_UNIFORMS } from '../src/shaders/uniform-layout.js';
++
++const NS: [number, number, number] = [1, 0.5, 0.25]; // a flat, elongated volume box
++
++describe('resolveCropShape', () => {
++  it('fills in defaults per type', () => {
++    expect(resolveCropShape({ type: 'sphere' })).toEqual({
++      type: 'sphere', enabled: true, mode: 'inside', center: [0.5, 0.5, 0.5], size: [0.25, 0, 0], rotation: [0, 0, 0],
++    });
++    expect(resolveCropShape({ type: 'box' })!.size).toEqual([0.25, 0.25, 0.25]);
++    expect(resolveCropShape({ type: 'cylinder' })!.size).toEqual([0.25, 0.25, 0]);
++    expect(resolveCropShape({ type: 'plane' })!.size).toEqual([0, 0, 0]);
++  });
++
++  it('rejects unknown types (including inherited property names) and null', () => {
++    expect(resolveCropShape({ type: 'cone' as never })).toBeNull();
++    expect(resolveCropShape({ type: 'toString' as never })).toBeNull();
++    expect(resolveCropShape(null)).toBeNull();
++    expect(resolveCropShape(undefined)).toBeNull();
++  });
++
++  it('sanitises numbers: non-finite values fall back, sizes cannot be negative', () => {
++    const s = resolveCropShape({ type: 'box', center: [NaN, 0.2, Infinity] as never, size: [-1, 0.3, 'x' as never], mode: 'bogus' as never })!;
++    expect(s.center).toEqual([0.5, 0.2, 0.5]);
++    expect(s.size).toEqual([0, 0.3, 0.25]);
++    expect(s.mode).toBe('inside');
++  });
++
++  it('keeps enabled=false and mode=outside', () => {
++    const s = resolveCropShape({ type: 'plane', enabled: false, mode: 'outside' })!;
++    expect(s.enabled).toBe(false);
++    expect(s.mode).toBe('outside');
++  });
++});
++
++describe('resolveCropShapes', () => {
++  it('skips invalid entries and keeps at most MAX_CROP_SHAPES', () => {
++    const many = Array.from({ length: MAX_CROP_SHAPES + 3 }, () => ({ type: 'sphere' as const }));
++    expect(resolveCropShapes(many)).toHaveLength(MAX_CROP_SHAPES);
++    expect(resolveCropShapes([{ type: 'nope' as never }, { type: 'box' }])).toHaveLength(1);
++    expect(resolveCropShapes(null)).toEqual([]);
++  });
++});
++
++describe('cropAxes', () => {
++  it('is the identity for no rotation', () => {
++    expect(cropAxes([0, 0, 0])).toEqual([[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
++  });
++
++  it('turns local +Z onto +X for ry = 90 and onto +Y for rx = -90', () => {
++    const close = (a: number[], b: number[]) => a.forEach((v, i) => expect(v).toBeCloseTo(b[i]!, 6));
++    close(cropAxes([0, 90, 0])[2], [1, 0, 0]);
++    close(cropAxes([-90, 0, 0])[2], [0, 1, 0]);
++    close(cropAxes([0, 0, 90])[0], [0, 1, 0]);
++  });
++
++  it('gives an orthonormal frame for any angles', () => {
++    const [x, y, z] = cropAxes([33, -71, 120]);
++    const dot = (a: number[], b: number[]) => a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!;
++    expect(dot(x, x)).toBeCloseTo(1, 6);
++    expect(dot(x, y)).toBeCloseTo(0, 6);
++    expect(dot(y, z)).toBeCloseTo(0, 6);
++    expect(dot(x, z)).toBeCloseTo(0, 6);
++  });
++});
++
++describe('packCropShapes', () => {
++  it('writes only enabled shapes, in the layout of crop.wgsl, and reports the count', () => {
++    const out = new Float32Array(MAX_CROP_SHAPES * CROP_SHAPE_VECS * 4).fill(7);
++    const shapes = resolveCropShapes([
++      { type: 'sphere', enabled: false },
++      { type: 'cylinder', mode: 'outside', center: [1, 0.5, 0], size: [0.1, 0.2, 0], rotation: [0, 90, 0] },
++    ]);
++    expect(packCropShapes(shapes, NS, out)).toBe(1);
++    // vec4 0: (type id 3 = cylinder, outside = 1)
++    expect(Array.from(out.slice(0, 4))).toEqual([3, 1, 0, 0]);
++    // vec4 1: world centre = (c - 0.5) * normalizedSize
++    expect(Array.from(out.slice(4, 7))).toEqual([0.5, 0, -0.125]);
++    // vec4 2: size
++    expect(Array.from(out.slice(8, 11)).map((v) => +v.toFixed(6))).toEqual([0.1, 0.2, 0]);
++    // vec4 3..5: local axes; ry = 90 turns Z onto X
++    expect(out[20]).toBeCloseTo(1, 6);
++    // the rest of the table is cleared
++    expect(Array.from(out.slice(CROP_SHAPE_VECS * 4)).every((v) => v === 0)).toBe(true);
++  });
++
++  it('fits the compute uniform struct', () => {
++    expect(COMPUTE_UNIFORMS.offsets.cropShapes + MAX_CROP_SHAPES * CROP_SHAPE_VECS * 16).toBe(COMPUTE_UNIFORMS.size);
++    expect(COMPUTE_UNIFORMS.offsets.cropCount).toBe(COMPUTE_UNIFORMS.offsets.pickPixel + 8);   // right after pickPixel's vec2f
++  });
++});
++
++describe('cropSignedDistance', () => {
++  const at = (type: 'plane' | 'box' | 'cylinder' | 'sphere', extra = {}) =>
++    resolveCropShape({ type, center: [0.5, 0.5, 0.5], size: [0.2, 0.1, 0.05], ...extra })!;
++
++  it('plane: distance along its normal (local Z), negative behind it', () => {
++    const p = at('plane');
++    expect(cropSignedDistance(p, NS, [0, 0, 0.1])).toBeCloseTo(0.1, 6);
++    expect(cropSignedDistance(p, NS, [0.3, -0.2, -0.04])).toBeCloseTo(-0.04, 6);
++  });
++
++  it('sphere: distance to the surface', () => {
++    const s = at('sphere');
++    expect(cropSignedDistance(s, NS, [0, 0, 0])).toBeCloseTo(-0.2, 6);
++    expect(cropSignedDistance(s, NS, [0.5, 0, 0])).toBeCloseTo(0.3, 6);
++  });
++
++  it('box: negative inside, exact distance to a face and to a corner outside', () => {
++    const b = at('box');
++    expect(cropSignedDistance(b, NS, [0, 0, 0])).toBeCloseTo(-0.05, 6);
++    expect(cropSignedDistance(b, NS, [0.3, 0, 0])).toBeCloseTo(0.1, 6);
++    expect(cropSignedDistance(b, NS, [0.3, 0.2, 0.05])).toBeCloseTo(Math.hypot(0.1, 0.1), 6);
++  });
++
++  it('cylinder: radius in local XY, half height along local Z', () => {
++    const c = at('cylinder', { size: [0.2, 0.1, 0] });
++    expect(cropSignedDistance(c, NS, [0, 0, 0])).toBeCloseTo(-0.1, 6);
++    expect(cropSignedDistance(c, NS, [0.3, 0, 0])).toBeCloseTo(0.1, 6);
++    expect(cropSignedDistance(c, NS, [0, 0, 0.3])).toBeCloseTo(0.2, 6);
++    // axis turned onto world X: now the length is along X
++    const turned = at('cylinder', { size: [0.2, 0.1, 0], rotation: [0, 90, 0] });
++    expect(cropSignedDistance(turned, NS, [0.05, 0, 0])).toBeLessThan(0);
++    expect(cropSignedDistance(turned, NS, [0, 0, 0.3])).toBeCloseTo(0.1, 6);
++  });
++});
++
++describe('removal rule', () => {
++  const sphere = (mode: 'inside' | 'outside', enabled = true) =>
++    resolveCropShape({ type: 'sphere', mode, enabled, center: [0.5, 0.5, 0.5], size: [0.2, 0, 0] })!;
++
++  it("'inside' removes the inside, 'outside' removes everything else", () => {
++    expect(cropShapeRemoves(sphere('inside'), NS, [0, 0, 0])).toBe(true);
++    expect(cropShapeRemoves(sphere('inside'), NS, [0.4, 0, 0])).toBe(false);
++    expect(cropShapeRemoves(sphere('outside'), NS, [0, 0, 0])).toBe(false);
++    expect(cropShapeRemoves(sphere('outside'), NS, [0.4, 0, 0])).toBe(true);
++  });
++
++  it('a disabled shape removes nothing', () => {
++    expect(cropShapeRemoves(sphere('inside', false), NS, [0, 0, 0])).toBe(false);
++    expect(cropShapeRemoves(sphere('outside', false), NS, [0.4, 0, 0])).toBe(false);
++  });
++
++  it('a plane with the default mode keeps the side its normal points to', () => {
++    const plane = [{ type: 'plane' as const }];
++    expect(isCropRemoved(plane, NS, [0, 0, -0.05])).toBe(true);
++    expect(isCropRemoved(plane, NS, [0, 0, 0.05])).toBe(false);
++  });
++
++  it('several shapes remove the union of what each removes', () => {
++    const two = [
++      { type: 'sphere' as const, mode: 'inside' as const, center: [0.2, 0.5, 0.5] as [number, number, number], size: [0.1, 0, 0] as [number, number, number] },
++      { type: 'sphere' as const, mode: 'inside' as const, center: [0.8, 0.5, 0.5] as [number, number, number], size: [0.1, 0, 0] as [number, number, number] },
++    ];
++    expect(isCropRemoved(two, NS, [-0.3, 0, 0])).toBe(true);
++    expect(isCropRemoved(two, NS, [0.3, 0, 0])).toBe(true);
++    expect(isCropRemoved(two, NS, [0, 0, 0])).toBe(false);
++    expect(isCropRemoved([], NS, [0, 0, 0])).toBe(false);
++  });
++});
+diff --git a/test/uniform-layout.test.ts b/test/uniform-layout.test.ts
+index 177e4b4..4a721df 100644
+--- a/test/uniform-layout.test.ts
++++ b/test/uniform-layout.test.ts
+@@ -12,7 +12,7 @@ import { COMPUTE_UNIFORMS, LABEL_UNIFORMS, SLICE_UNIFORMS } from '../src/shaders
+ 
+ describe('COMPUTE_UNIFORMS layout', () => {
+   it('has the expected total size (multiple of 16)', () => {
+-    expect(COMPUTE_UNIFORMS.size).toBe(816);
++    expect(COMPUTE_UNIFORMS.size).toBe(1584);
+     expect(COMPUTE_UNIFORMS.size % 16).toBe(0);
+   });
+ 
+@@ -32,6 +32,8 @@ describe('COMPUTE_UNIFORMS layout', () => {
+       gradientOpacity: 788,
+       orthographic: 792,
+       pickPixel: 800,
++      cropCount: 808,       // after pickPixel's vec2f
++      cropShapes: 816,      // 8 shapes x 6 vec4f, 16-aligned
+     });
+   });
+ 

@@ -523,6 +523,12 @@
   }
   .ctl-collapsible-arrow { color: var(--text-dim); transition: transform 0.15s ease; flex-shrink: 0; }
   .ctl-collapsible.open .ctl-collapsible-arrow { transform: rotate(90deg); }
+  .ctl-crop { border-top: 1px solid var(--viewer-border); padding-top: 0.55em; margin-top: 0.4em; }
+  .ctl-crop:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+  .ctl-crop-body { padding-top: 0.3em; }
+  .ctl-crop-body[hidden] { display: none; }
+  .ctl-crop-body .ctl-segmented { margin-bottom: 0.7em; }
+  .ctl-crop-count { margin-left: auto; font-size: 10px; color: var(--accent); font-weight: 600; }
   .ctl-eyebrow { text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em; color: var(--text-dim); font-weight: 600; }
   .ctl-collapsible-body { display: none; padding-top: 0.5em; }
   .ctl-collapsible.open .ctl-collapsible-body { display: block; }

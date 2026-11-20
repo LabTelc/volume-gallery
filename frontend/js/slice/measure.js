@@ -379,9 +379,10 @@ export const DVR_THRESHOLD = 0.15; // the opacity at which a ray counts as havin
  *  - "mip": the brightest point along the ray,
  *  - anything else (volume rendering): the first sample whose opacity reaches DVR_THRESHOLD.
  * The ray is in world space; `size` are the box extents, `clip` the clipping box ({min, max}, fractions 0..1)
- * outside which nothing is shown. Returns { point (voxel coordinates in `dims`), value, accuracy (voxels) } or null.
+ * outside which nothing is shown; `removed(worldPoint)` tells whether a crop shape removes a position (it counts as
+ * empty). Returns { point (voxel coordinates in `dims`), value, accuracy (voxels) } or null.
  */
-export function pickVolume(vol, ray, size, dims, { mode = "dvr", isoValue = 0.5, tf = {}, clip = null } = {}) {
+export function pickVolume(vol, ray, size, dims, { mode = "dvr", isoValue = 0.5, tf = {}, clip = null, removed = null } = {}) {
   const half = size.map((s) => s / 2);
   const span = rayBox(ray.origin, ray.dir, half.map((h) => -h), half);
   if (!span) return null;
@@ -396,7 +397,11 @@ export function pickVolume(vol, ray, size, dims, { mode = "dvr", isoValue = 0.5,
   const dn = [ray.dir[0] / size[0], ray.dir[1] / size[1], ray.dir[2] / size[2]];
   const dt = 0.5 / Math.max(Math.abs(dn[0]) * vol.dims.x, Math.abs(dn[1]) * vol.dims.y, Math.abs(dn[2]) * vol.dims.z, 1e-9);
   const at = (t) => [0, 1, 2].map((i) => (ray.origin[i] + ray.dir[i] * t) / size[i] + 0.5);
-  const val = (t) => { const n = at(t); return vol.sample(n[0], n[1], n[2]); };
+  const val = (t) => {
+    if (removed && removed([0, 1, 2].map((i) => ray.origin[i] + ray.dir[i] * t))) return 0;
+    const n = at(t);
+    return vol.sample(n[0], n[1], n[2]);
+  };
   const op = (v) => opacityOf(v, tf);
   const result = (t, value) => {
     const n = at(t);
