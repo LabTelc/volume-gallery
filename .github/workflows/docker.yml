@@ -1,0 +1,87 @@
+name: Docker
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "docker-compose.yml"
+      - "backend/Dockerfile"
+      - "nginx/**"
+      - ".env.example"
+      - ".github/workflows/docker.yml"
+  pull_request:
+    paths:
+      - "docker-compose.yml"
+      - "backend/Dockerfile"
+      - "nginx/**"
+      - ".env.example"
+      - ".github/workflows/docker.yml"
+  workflow_dispatch:
+    inputs:
+      build_app_image:
+        description: "Also build the (heavy) application image"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 5 1 * *" # monthly: catches base-image or upstream-download breakage
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compose-config:
+    name: docker-compose.yml is valid
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuses to start without a secret key
+        run: |
+          if docker compose --env-file .env.example config >/dev/null 2>&1; then
+            echo "::error::compose config succeeded without VG_SECRET_KEY"; exit 1
+          fi
+      - name: Renders with a secret key
+        run: VG_SECRET_KEY=$(openssl rand -hex 32) docker compose --env-file .env.example config --quiet
+
+  nginx:
+    name: nginx config passes nginx -t
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build nginx image
+        run: docker build -t vg-nginx ./nginx
+      - name: Generate a throw-away certificate
+        run: sh nginx/generate-self-signed-cert.sh localhost "$RUNNER_TEMP/certs"
+      - name: nginx -t
+        run: |
+          for buffering in off on; do
+            docker run --rm \
+              --add-host volume-gallery:127.0.0.1 \
+              -e VG_HTTPS_PORT=8443 \
+              -e VG_NGINX_REQUEST_BUFFERING=$buffering \
+              -v "$RUNNER_TEMP/certs:/etc/nginx/certs:ro" \
+              --entrypoint sh vg-nginx -c '/docker-entrypoint.sh true >/dev/null && nginx -t'
+          done
+
+  app-image:
+    name: Build application image
+    # Heavy (compiles PotreeConverter, builds the kiln renderer), so only monthly or on demand.
+    if: github.event_name == 'schedule' || inputs.build_app_image
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: false
+          tags: volume-gallery:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
