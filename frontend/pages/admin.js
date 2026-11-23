@@ -40,7 +40,7 @@ async function load() {
       (u) => `
     <tr>
       <td>${escapeHtml(u.username)}</td>
-      <td><span class="pill ${u.role}">${u.role}</span></td>
+      <td><span class="pill ${escapeHtml(u.role)}">${escapeHtml(u.role)}</span></td>
       <td>${u.disabled ? '<span class="dim">disabled</span>' : u.pending ? '<span class="dim" title="No password yet: the user has to open the link they were given">waiting for password</span>' : '<span style="color:var(--ok)">active</span>'}</td>
       <td class="row-actions">
         ${
@@ -178,10 +178,9 @@ function showLink(made, title) {
   document.getElementById("pl-close").addEventListener("click", () => { document.getElementById("modal-root").innerHTML = ""; });
 }
 
+// Escapes text for HTML, including inside attribute values (textContent -> innerHTML leaves quotes alone).
 function escapeHtml(s) {
-  const d = document.createElement("div");
-  d.textContent = s;
-  return d.innerHTML;
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 load();

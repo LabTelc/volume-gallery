@@ -398,13 +398,13 @@ export const SUPPORTED_DTYPES = Object.keys(FORMATS);
 
 /** Texture format description for a transport dtype, or null when unsupported. */
 export function textureFormatFor(dtype) {
-  return FORMATS[dtype] ?? null;
+  return Object.hasOwn(FORMATS, dtype) ? FORMATS[dtype] : null; // (own properties only: not "constructor", "__proto__", ...)
 }
 
 // ---------------------------------------------------------------- windowing
 
 export function fullRangeWindow(dtype) {
-  const [lo, hi] = FORMATS[dtype]?.range ?? [0, 1];
+  const [lo, hi] = textureFormatFor(dtype)?.range ?? [0, 1];
   return { center: (lo + hi) / 2, width: Math.max(hi - lo, 1e-6) };
 }
 
@@ -416,7 +416,7 @@ export function applyWindow(value, center, width, invert = false) {
 
 /** Window from a dragged delta: horizontal = width, vertical = centre (right-drag convention). */
 export function dragWindow(win, dx, dy, dtype) {
-  const [lo, hi] = FORMATS[dtype]?.range ?? [0, 1];
+  const [lo, hi] = textureFormatFor(dtype)?.range ?? [0, 1];
   const range = hi - lo;
   const scale = range / 800; // 800 px of drag sweeps the whole range
   return {

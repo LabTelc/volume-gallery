@@ -1,5 +1,5 @@
 // The page script of viewers/volume.html (it was an inline <script type="module"> there). Bundled by webpack.config.js.
-    import { api, requireLogin, getRole, getUsername, renderShell, wireLogout } from "../js/api.js";
+    import { api, requireLogin, getRole, getUsername, renderShell, wireLogout, safeUrl } from "../js/api.js";
     import { backToFolderButton } from "../js/back-link.js";
     import { syncHistogram } from "../js/histogram.js";
 import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/slice/transfer-function.js";
@@ -55,10 +55,9 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
     const content = document.getElementById("content");
     const $ = (id) => document.getElementById(id);
 
+    // Escapes text for HTML, including inside attribute values (textContent -> innerHTML leaves quotes alone).
     function escapeHtml(s) {
-      const d = document.createElement("div");
-      d.textContent = s;
-      return d.innerHTML;
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     }
 
     function webgpuStatus() {
@@ -325,7 +324,6 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
       if (descEl) makeDescriptionExpandable(descEl, { title: volume.title, text: volume.description });
 
       const canvasWrap = $("canvas-wrap");
-      const canvasArea = $("canvas-area");
 
       $("panel-open").addEventListener("click", () => setPanelOpen(true));
 
@@ -949,7 +947,9 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
         downloadBtn.addEventListener("click", async () => {
           try {
             const access = await api.meshAccessUrl(volumeId);
-            window.location.href = access.url;
+            const target = safeUrl(access.url);
+            if (!target) throw new Error("The server returned an invalid download link.");
+            window.location.href = target;
           } catch (err) {
             alert(err.message);
           }
@@ -975,7 +975,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
             history.replaceState(history.state, "", window.location.pathname + qs + window.location.hash);
             last = qs;
           }
-        } catch (err) {
+        } catch (_) {
           // replaceState can be rate-limited by the browser; the next tick retries.
         }
       };

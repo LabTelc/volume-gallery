@@ -187,11 +187,7 @@ test("decodeTf brings stray positions into range", () => {
   assert.deepEqual(decodeTf("-1:000000,9:ffffff"), { preset: "custom", stops: gray() });
 });
 
-// Known gap: PRESETS[name] also finds inherited properties, so a link with ?stf=constructor (or ?tf=...&tfcol=toString)
-// makes decodeTf throw "PRESETS[name].map is not a function" instead of returning null. cursor.js calls it while
-// restoring the slice state from the URL, so the rest of that restore (layout, measurements) is skipped.
-// `Object.hasOwn(PRESETS, name)` in presetStops and decodeTf would fix it. Reported as "todo" until then.
-test("names of inherited object properties are not presets", { todo: "PRESETS[name] reads inherited properties" }, () => {
+test("names of inherited object properties are not presets", () => {
   for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
     assert.equal(presetStops(name), null, `presetStops(${name})`);
     assert.equal(decodeTf(name), null, `decodeTf(${name})`);

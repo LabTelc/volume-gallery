@@ -358,7 +358,6 @@ export class Pane {
     const geom = st.paneGeom(this.axis);
     const view = absView(st.views[this.axis], geom);
     const flip = st.flips[this.axis];
-    const info = AXIS_INFO[this.axis];
     const toPx = (a, b) => planeToPixel(a, b, width, height, view, ppv, flip);
     const poly = geom.polygon().map(([a, b]) => toPx(a, b));
     const ptsAttr = poly.map((q) => `${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(" ");

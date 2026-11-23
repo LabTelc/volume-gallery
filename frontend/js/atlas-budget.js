@@ -56,13 +56,6 @@ async function fetchJson(url, signal) {
   return res.json();
 }
 
-function bytesPerSourceVoxel(dtype) {
-  const m = String(dtype).match(/(\d+)$/); // "|u1", "<u2", "<f4" / "uint16", "float32"
-  if (!m) return 2;
-  const n = parseInt(m[1], 10);
-  return /^[|<>=]?[uifb]\d$/.test(dtype) ? n : n / 8;
-}
-
 /**
  * Reads shape / dtype of the finest LOD this sharded volume exposes (the backend
  * already truncates the pyramid to the user's "max detail level"). The files

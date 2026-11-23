@@ -6,7 +6,7 @@ import {
   isAligned, matMul, matrixToEuler, nearestInPolygon, orthonormalize, rotAxis,
 } from "./geometry.js";
 import { MAX_MEASURES, decodeMeasures, encodeMeasures, roundPoint } from "./measure.js";
-import { decodeAlpha, decodeTf, defaultAlpha, encodeAlpha, encodeTf, isOpaque, normalizeAlpha, normalizeStops, presetStops } from "./transfer-function.js";
+import { decodeAlpha, decodeTf, defaultAlpha, encodeAlpha, isOpaque, normalizeAlpha, normalizeStops, presetStops } from "./transfer-function.js";
 
 
 export const LAYOUTS = ["3d", "quad", "xy", "xz", "yz"];

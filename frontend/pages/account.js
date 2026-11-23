@@ -1,5 +1,5 @@
 // The page script of account.html (it was an inline <script type="module"> there). Bundled by webpack.config.js.
-import { api, requireLogin, getRole, getUsername, setSession, renderShell, wireLogout } from "../js/api.js";
+import { api, requireLogin, getRole, getUsername, setSession, renderShell, wireLogout, escapeHtml } from "../js/api.js";
 import { pageHint } from "../js/help.js";
 
 requireLogin();
@@ -9,13 +9,13 @@ document.getElementById("shell").innerHTML = `
   ${renderShell("account", role, getUsername())}
   <main>
     <h1>Account</h1>
-    <p class="subtitle">Signed in as <strong>${getUsername()}</strong>.</p>
+    <p class="subtitle">Signed in as <strong>${escapeHtml(getUsername())}</strong>.</p>
     ${pageHint("account", role)}
     <h2>Change password</h2>
     <div id="error" style="display:none" class="error-box"></div>
     <div id="success" style="display:none;color:var(--ok);margin-bottom:1em"></div>
     <form id="pw-form" style="max-width:360px">
-      <input type="text" autocomplete="username" value="${getUsername()}" hidden />
+      <input type="text" autocomplete="username" value="${escapeHtml(getUsername())}" hidden />
       <div class="field">
         <label for="current-password">Current password</label>
         <input id="current-password" type="password" autocomplete="current-password" required />

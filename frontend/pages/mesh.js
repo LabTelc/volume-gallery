@@ -1,5 +1,5 @@
 // The page script of viewers/mesh.html (it was an inline <script type="module"> there). Bundled by webpack.config.js.
-import { api, requireLogin, getRole, getUsername, renderShell, wireLogout } from "../js/api.js";
+import { api, requireLogin, getRole, getUsername, renderShell, wireLogout, safeUrl } from "../js/api.js";
 import { backToFolderButton } from "../js/back-link.js";
 import { toggleHelpPanel } from "../js/help.js";
 import { makeDescriptionExpandable } from "../js/description.js";
@@ -55,10 +55,9 @@ wireLogout();
 
 const content = document.getElementById("content");
 
+// Escapes text for HTML, including inside attribute values (textContent -> innerHTML leaves quotes alone).
 function escapeHtml(s) {
-  const d = document.createElement("div");
-  d.textContent = s;
-  return d.innerHTML;
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 const $ = (id) => document.getElementById(id);
@@ -371,7 +370,9 @@ async function init() {
         const access = volumeId
           ? await api.meshAccessUrl(volumeId)
           : await api.meshDownloadAccessUrl(meshId);
-        window.location.href = access.url;
+        const target = safeUrl(access.url);
+        if (!target) throw new Error("The server returned an invalid download link.");
+        window.location.href = target;
       } catch (err) {
         alert(err.message);
       }

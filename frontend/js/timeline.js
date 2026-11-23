@@ -8,7 +8,7 @@
 // The panel keeps its state while it is hidden (the keys, the settings), so reopening it picks up where it was.
 
 import {
-  hasClip, hasCrop, hasTf, isClipped, isCropped, passFraction, playPose, poseOfBookmark, prepareSpec, readCrop, readPose, readTf,
+  hasClip, hasCrop, hasTf, isClipped, isCropped, playPose, poseOfBookmark, prepareSpec, readCrop, readPose, readTf,
   renderAnimation, resetTfSignature, SIZES, sweepIndices, writePose, keyTimes,
 } from "./animate.js";
 import { ANIM_MAX_CHARS, ANIM_PARAM, encodeSpec } from "./anim-url.js";

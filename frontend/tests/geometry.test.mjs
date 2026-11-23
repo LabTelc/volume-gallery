@@ -308,10 +308,7 @@ test("every supported dtype has a texture format", () => {
   assert.equal(textureFormatFor(undefined), null);
 });
 
-// Known gap: FORMATS[dtype] also finds inherited properties, so "constructor" or "toString" return a function
-// instead of null. The dtype comes from the server's own volume.json, so this is not exploitable today, but
-// `Object.hasOwn(FORMATS, dtype) ? FORMATS[dtype] : null` would close it. Reported as "todo" until then.
-test("texture formats are not looked up on the prototype", { todo: "FORMATS[dtype] reads inherited properties" }, () => {
+test("texture formats are not looked up on the prototype", () => {
   for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) assert.equal(textureFormatFor(name), null, name);
 });
 

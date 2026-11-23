@@ -38,7 +38,7 @@ export function rgbToHex([r, g, b]) {
 
 /** Fresh copy of a preset's stops, or null for an unknown name. */
 export function presetStops(name) {
-  return PRESETS[name] ? PRESETS[name].map((s) => ({ ...s })) : null;
+  return Object.hasOwn(PRESETS, name) ? PRESETS[name].map((s) => ({ ...s })) : null;
 }
 
 /**
@@ -177,7 +177,7 @@ export function encodeTf(tf) {
 /** Inverse of encodeTf; returns {preset, stops} or null for malformed input. */
 export function decodeTf(text) {
   if (!text) return null;
-  if (PRESETS[text]) return { preset: text, stops: presetStops(text) };
+  if (Object.hasOwn(PRESETS, text)) return { preset: text, stops: presetStops(text) };
   if (!text.includes(":")) return null;
   const parts = text.split(",").map((part) => {
     const [pos, hex] = part.split(":");

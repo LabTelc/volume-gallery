@@ -15,8 +15,10 @@ const RAIL_COLLAPSED_KEY = "vg_rail_collapsed";
     const params = new URLSearchParams(window.location.hash.slice(1));
     const st = params.get("vg_st");
     const sc = params.get("vg_sc");
-    if (st) sessionStorage.setItem(SHARE_TOKEN_KEY, st);
-    if (sc) sessionStorage.setItem(SHARE_CODE_KEY, sc);
+    // Both values come from the URL fragment, so only the shapes the backend produces are kept:
+    // a JWT (base64url parts separated by dots) and a share code (letters, digits, '-' and '_').
+    if (st && /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+){0,2}$/.test(st)) sessionStorage.setItem(SHARE_TOKEN_KEY, st);
+    if (sc && /^[A-Za-z0-9_-]{1,64}$/.test(sc)) sessionStorage.setItem(SHARE_CODE_KEY, sc);
     history.replaceState(null, "", window.location.pathname + window.location.search);
   } catch (_) {}
 })();
@@ -141,6 +143,16 @@ export function escapeHtml(s) {
     }[c]));
 }
 
+// A URL that is safe to put into href / location: only http(s) (and mailto when allowed) survive;
+// anything else (javascript:, data:, ...) gives "". Relative URLs are resolved against the page.
+export function safeUrl(url, { mailto = false } = {}) {
+    try {
+        const u = new URL(String(url ?? ""), window.location.href);
+        if (u.protocol === "http:" || u.protocol === "https:" || (mailto && u.protocol === "mailto:")) return u.href;
+    } catch (_) { /* not a URL */ }
+    return "";
+}
+
 // <img> tags for the logo: one, or a light and a dark one (shown according to the theme).
 export function brandLogoHtml(b, cls = "brand-logo") {
     if (!b.logo_url) return "";
@@ -156,7 +168,7 @@ export function contactItems(b) {
     if (c.email) items.push(`<a href="mailto:${escapeHtml(c.email)}">Contact</a>`);
     if (c.phone) items.push(`<a href="tel:${escapeHtml(c.phone.replace(/[^+\d]/g, ""))}">Phone</a>`);
     if (c.website) {
-        items.push(`<a href="${escapeHtml(c.website)}" target="_blank" rel="noopener noreferrer">Web</a>`);
+        items.push(`<a href="${escapeHtml(safeUrl(c.website))}" target="_blank" rel="noopener noreferrer">Web</a>`);
     }
     if (c.address) items.push(`<span>${escapeHtml(c.address)}</span>`);
     return items;
@@ -164,7 +176,7 @@ export function contactItems(b) {
 
 export function linkItems(b) {
     return (b.links || []).map((l) =>
-        `<a href="${escapeHtml(l.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(l.label)}</a>`);
+        `<a href="${escapeHtml(safeUrl(l.url))}" target="_blank" rel="noopener noreferrer">${escapeHtml(l.label)}</a>`);
 }
 
 // Puts the configured name and logo into the side rail and the page title.
@@ -849,7 +861,7 @@ export function renderShell(activePage, role, username) {
       <div class="rail-top">
         <div class="rail-id">
           <div class="brand"${brandAttrs}>${brandInner}</div>
-          <div class="role-tag">${role}</div>
+          <div class="role-tag">${escapeHtml(role)}</div>
         </div>
         <button type="button" class="rail-collapse-btn" id="rail-collapse-btn" title="${isCollapsed ? "Expand sidebar" : "Minimize sidebar"}" aria-label="Toggle sidebar">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -874,7 +886,7 @@ export function renderShell(activePage, role, username) {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
             </button>
         </div>
-        <div class="signed-in-as">Signed in as <strong>${username}</strong></div>
+        <div class="signed-in-as">Signed in as <strong>${escapeHtml(username)}</strong></div>
         <button id="logout-btn" title="Sign out" aria-label="Sign out">
           <svg class="logout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
@@ -940,4 +952,4 @@ export function wireLogout() {
       window.location.href = "/login.html";
     });
   }
-}
+}
