@@ -51,3 +51,19 @@ Detailed documentation has been split into the following guides:
 *   **[Deployment Guide](docs/deployment_guide.md)**: TrueNAS SCALE deployment, HTTPS/TLS requirements, Docker Hub publishing, and backups.
 *   **[Architecture & Internals](docs/architecture_internals.md)**: Backend/frontend design, job queues (Redis), background processing, and permissions.
 *   **[Kiln Volume Format](docs/kiln_volume_format.md)**: Deep dive into the sharded volume format specification.
+
+## License
+
+Copyright (C) 2026 ITAM CAS CZ, Antonín Zajíček <zajicek@itam.cas.cz>
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version. It is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the [LICENSE](LICENSE) file for details.
+
+Third-party components keep their own licenses: kiln-render (Apache-2.0), Nexus and VCGlib (GPL-3.0).
+
+## Contact
+
+Questions, bug reports and licensing enquiries: zajicek@itam.cas.cz or GitHub issues in this repository
