@@ -528,6 +528,17 @@
   .ctl-crop-body { padding-top: 0.3em; }
   .ctl-crop-body[hidden] { display: none; }
   .ctl-crop-body .ctl-segmented { margin-bottom: 0.7em; }
+  .ctl-crop-edit { margin-bottom: 0.6em; padding-bottom: 0.2em; }
+  .ctl-crop-edit > .ctl-row-label { display: block; margin-bottom: 0.3em; }
+  .ctl-crop-edit .ctl-segmented { margin-bottom: 0.5em; }
+  .ctl-crop-edit .ctl-segment:disabled { opacity: 0.4; cursor: default; }
+  .ctl-crop-hint { font-size: 11px; line-height: 1.35; opacity: 0.75; }
+  .crop-mode-pill { position: absolute; left: 10px; top: 10px; z-index: 5; display: flex; border-radius: 999px; overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.25); background: rgba(0,0,0,0.6); color: #eee; backdrop-filter: blur(4px); }
+  .crop-mode-pill[hidden] { display: none; }
+  .crop-mode-pill button { font: inherit; font-size: 11px; padding: 0.3em 0.8em; border: 0; background: transparent; color: inherit; cursor: pointer; }
+  .crop-mode-pill button.active { background: var(--accent); color: #000; font-weight: 600; }
+  .crop-edit-on canvas { cursor: crosshair; }
   .ctl-crop-count { margin-left: auto; font-size: 10px; color: var(--accent); font-weight: 600; }
   .ctl-eyebrow { text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em; color: var(--text-dim); font-weight: 600; }
   .ctl-collapsible-body { display: none; padding-top: 0.5em; }

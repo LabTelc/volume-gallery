@@ -12,6 +12,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
       saveAtlasMB,
     } from "../js/atlas-budget.js";
     import { setupSliceIntegration } from "../js/slice/slice-integration.js";
+    import { CropEditor } from "../js/crop-editor.js";
     import { niceScaleLength } from "../js/scalebar.js";
     import { toggleHelpPanel } from "../js/help.js";
     import { makeDescriptionExpandable } from "../js/description.js";
@@ -476,6 +477,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
           syncHistogram(viewer, histogramData);
           slices.setHistogram(histogramData); // the slice controls draw it behind their opacity curve
           buildControlPanel(viewer, canvasWrap, {
+            slices, // the slice integration (the crop editor shares the 3D view's mouse with the ruler)
             numLodLevels: numLevels,
             minLevel,
             onMinLevelChange: (newMinLevel) => loadVolume(newMinLevel),
@@ -1027,6 +1029,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
       // --- crop shapes (kiln-render patch 0007): one of each kind, each switchable and set to remove its inside
       // or its outside. Position is a fraction of the volume box; sizes are fractions of its longest side. ---
       const canCrop = typeof renderer.setCropShapes === "function";
+      const slices = lodOptions.slices;
       const CROP_UI = {
         plane: { label: "Plane", sides: ["\u2212 side", "+ side"], sizes: [] },
         box: { label: "Cube", sizes: [["Size X", 0, 1 / 200, 150], ["Size Y", 1, 1 / 200, 150], ["Size Z", 2, 1 / 200, 150]] },
@@ -1155,6 +1158,24 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
               <span class="ctl-crop-count" data-role="crop-count"></span>
             </button>
             <div class="ctl-collapsible-body">
+              <div class="ctl-crop-edit">
+                <span class="ctl-row-label">Mouse in the 3D view</span>
+                <div class="ctl-segmented" data-role="crop-mouse">
+                  <button type="button" class="ctl-segment active" data-mode="view" title="The mouse moves the camera">Move the view</button>
+                  <button type="button" class="ctl-segment" data-mode="edit" title="The mouse edits the selected crop shape (Esc: back to the view). The right button and the wheel still move the camera">Edit crop shape</button>
+                </div>
+                <div class="ctl-crop-edit-body" data-role="crop-edit-body" hidden>
+                  <div class="ctl-segmented" data-role="crop-tool">
+                    <button type="button" class="ctl-segment active" data-tool="move" title="Drag an arrow to move along an axis, or anywhere else to move in the screen plane">Move</button>
+                    <button type="button" class="ctl-segment" data-tool="rotate" title="Drag a ring to turn about that axis of the shape, or anywhere else to turn it like a trackball">Rotate</button>
+                    <button type="button" class="ctl-segment" data-tool="scale" title="Drag a square to resize along that axis, or anywhere else to scale all sizes together">Scale</button>
+                  </div>
+                  <div class="ctl-segmented" data-role="crop-pick" title="The shape the mouse edits (you can also click a shape's outline)">
+                    ${cropList.map((s) => `<button type="button" class="ctl-segment" data-pick="${s.type}">${CROP_UI[s.type].label}</button>`).join("")}
+                  </div>
+                  <div class="ctl-crop-hint" data-role="crop-hint"></div>
+                </div>
+              </div>
               ${cropList.map(cropShapeHtml).join("")}
             </div>
           </div>` : ""}
@@ -1255,6 +1276,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
         };
         input.addEventListener("input", () => { paint(); apply(parseFloat(input.value)); });
         paint();
+        return (v) => { input.value = v; paint(); }; // moves the slider from code: repaints without calling `apply`
       }
 
       // --- generic dual-handle range row (clip sliders), values in voxel
@@ -1832,12 +1854,68 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
       // --- Crop section: every change sends the whole list to the renderer ---
       if (canCrop) {
         const countEl = panel.querySelector('[data-role="crop-count"]');
+        let editor = null;
         const applyCrop = () => {
           renderer.setCropShapes(cropList.map((s) => ({ ...s, center: [...s.center], size: [...s.size], rotation: [...s.rotation] })));
           dirty();
           const on = cropList.filter((s) => s.enabled).length;
           countEl.textContent = on ? `${on} on` : "";
+          editor?.refresh();
+          syncEditUi();
         };
+        // Sliders as the mouse editor needs to move them (it changes the shapes directly; the sliders follow).
+        const sliderSetters = {};
+        const syncSliders = (shape) => {
+          const st = sliderSetters[shape.type];
+          for (let i = 0; i < 3; i++) {
+            st.p[i](shape.center[i] * 100);
+            st.r[i](shape.rotation[i]);
+          }
+          for (const [i, set] of Object.entries(st.s)) set(shape.size[i] / CROP_UI[shape.type].sizes.find((q) => q[1] === +i)[2]);
+        };
+        // The "Mouse in the 3D view" controls: view / edit switch, tool, which shape
+        const mouseRoot = panel.querySelector(".ctl-crop-edit");
+        const editBody = mouseRoot.querySelector('[data-role="crop-edit-body"]');
+        const HINTS = {
+          move: "Drag an arrow to move along that axis, anywhere else to move in the screen plane.",
+          rotate: "Drag a ring to turn about that axis of the shape, anywhere else to turn it like a trackball.",
+          scale: "Drag a square to resize along that axis, anywhere else to scale all sizes together.",
+        };
+        function syncEditUi() {
+          if (!editor) return;
+          mouseRoot.querySelectorAll('[data-role="crop-mouse"] .ctl-segment').forEach((b) => b.classList.toggle("active", b.dataset.mode === editor.mode));
+          editBody.hidden = editor.mode !== "edit";
+          mouseRoot.querySelectorAll('[data-role="crop-tool"] .ctl-segment').forEach((b) => b.classList.toggle("active", b.dataset.tool === editor.tool));
+          mouseRoot.querySelectorAll('[data-role="crop-pick"] .ctl-segment').forEach((b) => {
+            const s = cropList.find((q) => q.type === b.dataset.pick);
+            b.disabled = !s.enabled;
+            b.classList.toggle("active", s.enabled && editor.selected === s.type);
+          });
+          const hint = mouseRoot.querySelector('[data-role="crop-hint"]');
+          const sel = cropList.find((s) => s.type === editor.selected && s.enabled);
+          hint.textContent = !sel ? "Switch a shape on to edit it."
+            : sel.type === "plane" && editor.tool === "scale" ? "A plane has no size. Use Move or Rotate."
+            : HINTS[editor.tool];
+        }
+        editor = new CropEditor({
+          host: $("pane-3d"),
+          shapes: cropList,
+          getViewer: () => viewer,
+          getLayout: () => slices.views?.state.layout ?? "3d",
+          onChange: (shape) => { syncSliders(shape); applyCrop(); },
+          alive: () => panel.isConnected,
+        });
+        editor.on(() => {
+          if (editor.mode === "edit" && slices.measuring) slices.toggleMeasure(); // the ruler and the shape editor both want the mouse
+          syncEditUi();
+        });
+        const offMeasuring = slices.onMeasuring((on) => {
+          if (!panel.isConnected) offMeasuring();
+          else if (on) editor.setMode("view");
+        });
+        mouseRoot.querySelectorAll('[data-role="crop-mouse"] .ctl-segment').forEach((b) => b.addEventListener("click", () => editor.setMode(b.dataset.mode)));
+        mouseRoot.querySelectorAll('[data-role="crop-tool"] .ctl-segment').forEach((b) => b.addEventListener("click", () => editor.setTool(b.dataset.tool)));
+        mouseRoot.querySelectorAll('[data-role="crop-pick"] .ctl-segment').forEach((b) => b.addEventListener("click", () => editor.select(b.dataset.pick)));
         const pct = (v) => `${Math.round(v)}%`;
         const deg = (v) => `${Math.round(v)}\u00b0`;
         for (const shape of cropList) {
@@ -1853,11 +1931,12 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
             root.querySelectorAll(`[data-role="crop-mode-${t}"] .ctl-segment`).forEach((b) => b.classList.toggle("active", b === btn));
             applyCrop();
           }));
+          const setters = sliderSetters[t] = { p: [], r: [], s: {} };
           for (let i = 0; i < 3; i++) {
-            wireSlider(root, `crop-${t}-p${i}`, (v) => { shape.center[i] = v / 100; applyCrop(); }, pct);
-            wireSlider(root, `crop-${t}-r${i}`, (v) => { shape.rotation[i] = v; applyCrop(); }, deg);
+            setters.p[i] = wireSlider(root, `crop-${t}-p${i}`, (v) => { shape.center[i] = v / 100; applyCrop(); }, pct);
+            setters.r[i] = wireSlider(root, `crop-${t}-r${i}`, (v) => { shape.rotation[i] = v; applyCrop(); }, deg);
           }
-          for (const [, i, scale] of CROP_UI[t].sizes) wireSlider(root, `crop-${t}-s${i}`, (v) => { shape.size[i] = v * scale; applyCrop(); }, pct);
+          for (const [, i, scale] of CROP_UI[t].sizes) setters.s[i] = wireSlider(root, `crop-${t}-s${i}`, (v) => { shape.size[i] = v * scale; applyCrop(); }, pct);
           if (t === "plane") {
             root.querySelectorAll('[data-role="crop-axis-plane"] .ctl-segment').forEach((btn) => btn.addEventListener("click", () => {
               const rot = PLANE_AXIS_ROTATION[btn.dataset.axis];
@@ -1870,6 +1949,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
           }
         }
         countEl.textContent = cropList.some((s) => s.enabled) ? `${cropList.filter((s) => s.enabled).length} on` : "";
+        syncEditUi();
       }
 
       // An animation changes the transfer function (colours, opacity curve, window, density): the panel follows.
