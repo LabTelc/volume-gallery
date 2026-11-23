@@ -9,6 +9,7 @@ const MAX_INFLATED = 400_000;              // bytes of JSON accepted from a link
 const PRESETS = ["coolwarm", "grayscale", "grayscale-inverted", "hot", "cool", "viridis", "plasma", "seismic", "custom"];
 const HEX = /^#[0-9a-fA-F]{6}$/;
 const TURN_AXES = ["up", "x", "y", "z", "screen-up", "screen-right", "view"];
+const CROP_TYPES = ["plane", "box", "cylinder", "sphere"];
 
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -31,6 +32,26 @@ function sanitizeTf(raw) {
   return tf;
 }
 
+/** The crop shapes of a view: at most one switched-on shape per kind, numbers in the ranges the Crop panel has. */
+function sanitizeCrop(raw) {
+  if (!Array.isArray(raw)) return null;
+  const out = [];
+  for (const s of raw.slice(0, 8)) {
+    if (!s || typeof s !== "object" || !CROP_TYPES.includes(s.type) || s.enabled === false || out.some((o) => o.type === s.type)) continue;
+    const center = vec3(s.center), size = vec3(s.size), rotation = vec3(s.rotation);
+    if (!center || !size || !rotation) continue;
+    out.push({
+      type: s.type,
+      mode: s.mode === "outside" ? "outside" : "inside",
+      enabled: true,
+      center: center.map((v) => clamp(v, 0, 1)),
+      size: size.map((v) => clamp(v, 0, 0.75)),
+      rotation: rotation.map((v) => clamp(v, -360, 360)),
+    });
+  }
+  return out;
+}
+
 function sanitizePose(raw) {
   if (!raw || typeof raw !== "object") return null;
   const back = vec3(raw.back), up = vec3(raw.up), target = vec3(raw.target);
@@ -48,6 +69,8 @@ function sanitizePose(raw) {
   }
   const tf = sanitizeTf(raw.tf);
   if (tf) pose.tf = tf;
+  const crop = sanitizeCrop(raw.crop);
+  if (crop) pose.crop = crop;
   return pose;
 }
 

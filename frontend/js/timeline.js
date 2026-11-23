@@ -2,12 +2,13 @@
 // the views (keys) sit on a time axis, each can carry the camera, the clipping planes and the transfer function,
 // and they can be moved, added at the playhead, replaced from the current view and removed. The playhead plays
 // the animation and scrubs it (showing the view at that time). Turntables and slice sweeps use the same
-// transport. Rendering to a video / image sequence, saved paths and links to an animation are in the side columns.
+// transport. The panel is one strip: the timeline, the settings, rendering to a video / image sequence and the saved
+// paths are tabs of it, so that it takes little room (a key's clipping, crop shapes and transfer function are lanes).
 //
 // The panel keeps its state while it is hidden (the keys, the settings), so reopening it picks up where it was.
 
 import {
-  hasClip, hasTf, isClipped, passFraction, playPose, poseOfBookmark, prepareSpec, readPose, readTf,
+  hasClip, hasCrop, hasTf, isClipped, isCropped, passFraction, playPose, poseOfBookmark, prepareSpec, readCrop, readPose, readTf,
   renderAnimation, resetTfSignature, SIZES, sweepIndices, writePose, keyTimes,
 } from "./animate.js";
 import { ANIM_MAX_CHARS, ANIM_PARAM, encodeSpec } from "./anim-url.js";
@@ -20,34 +21,48 @@ const KIND_LABEL = { path: "Camera path", turntable: "Turntable", slices: "Slice
 const LANES = [
   ["view", "View", () => true],
   ["clip", "Clipping", hasClip],
+  ["crop", "Cropping", hasCrop],
   ["tf", "Transfer function", hasTf],
 ];
+const TABS = ["timeline", "settings", "render", "saved"];
 
 let keys = []; // the views of the camera path, kept while the page is open (each has `at`)
 
 const STYLE = `
-.tl { position: relative; flex: 0 0 auto; background: var(--panel); border-top: 1px solid var(--line); color: var(--text); font-size: 12px; max-height: 46vh; overflow: auto; }
+.tl { position: relative; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--panel); border-top: 1px solid var(--line); color: var(--text); font-size: 12px; max-height: min(40vh, 22rem); }
 .tl[hidden] { display: none; }
+.tl [hidden] { display: none !important; }
 .tl button { font-size: 12px; padding: 0.2em 0.6em; }
 .tl input, .tl select { font-size: 12px; min-width: 0; }
-.tl-head { display: flex; align-items: center; gap: 0.6em; padding: 0.35em 0.8em; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-.tl-head .grow { flex: 1 1 auto; min-width: 0; }
+.tl-head { flex: 0 0 auto; display: flex; align-items: center; gap: 0.5em; padding: 0.2em 0.8em 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.tl-head > * { margin-bottom: 0.2em; }
+.tl-head .grow { flex: 1 1 8em; min-width: 0; }
 .tl-time { font-family: var(--mono); color: var(--text-dim); white-space: nowrap; }
 .tl-status { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-status.error { color: var(--danger); }
-.tl-grid { display: grid; grid-template-columns: 15.5rem minmax(0, 1fr) 17rem; }
-@media (max-width: 1150px) { .tl-grid { grid-template-columns: minmax(0, 1fr); } .tl-col + .tl-col { border-top: 1px solid var(--line); border-left: 0 !important; } }
-.tl-col { padding: 0.5em 0.8em; min-width: 0; }
-.tl-col + .tl-col { border-left: 1px solid var(--line); }
-.tl-f { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4em 0.6em; }
+.tl-tabs { display: flex; gap: 0.1em; margin-bottom: 0; }
+.tl .tl-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--text-dim); padding: 0.35em 0.75em; }
+.tl .tl-tabs button:hover { color: var(--text); }
+.tl .tl-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.tl-close { margin-bottom: 0.2em; }
+.tl-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0.5em 0.8em 0.6em; }
+.tl-f { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: 0.4em 0.8em; align-items: end; }
 .tl-f label { display: flex; flex-direction: column; gap: 0.15em; color: var(--text-dim); }
-.tl-f label.wide { grid-column: 1 / -1; }
+.tl-f label.wide { grid-column: span 2; }
+@media (max-width: 520px) { .tl-f label.wide { grid-column: 1 / -1; } }
 .tl-f label.check { flex-direction: row; align-items: center; gap: 0.4em; }
 .tl-f input[type="checkbox"] { width: auto; }
-.tl [hidden] { display: none !important; }
 .tl-sub { color: var(--text-dim); font-size: 11px; margin: 0.4em 0 0; }
-.tl-h { margin: 0 0 0.35em; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); }
-.tl-bar { display: flex; flex-wrap: wrap; gap: 0.4em; align-items: center; margin-bottom: 0.5em; }
+.tl-sub.one { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-line { display: flex; flex-wrap: wrap; gap: 0.4em; align-items: center; margin-top: 0.5em; }
+.tl-line.first { margin-top: 0; }
+.tl-line select, .tl-line input[type="text"], .tl-line input:not([type]) { flex: 1 1 10rem; max-width: 22rem; }
+.tl-tlgrid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5em 1em; }
+@media (min-width: 900px) { .tl-tlgrid.with-ins { grid-template-columns: minmax(0, 1fr) 17.5rem; } }
+.tl-bar { display: flex; flex-wrap: wrap; gap: 0.4em 0.6em; align-items: center; margin-bottom: 0.4em; }
+.tl-inc { display: inline-flex; flex-wrap: wrap; gap: 0.2em 0.7em; align-items: center; color: var(--text-dim); }
+.tl-inc label { display: inline-flex; gap: 0.3em; align-items: center; }
+.tl-inc input { width: auto; }
 .tl-tracks { position: relative; user-select: none; -webkit-user-select: none; touch-action: none; cursor: col-resize; }
 .tl-row { display: grid; grid-template-columns: 7.2rem minmax(0, 1fr); align-items: center; min-height: 24px; }
 .tl-row > .tl-lbl { color: var(--text-dim); font-size: 11px; padding-right: 0.5em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -64,12 +79,13 @@ const STYLE = `
 .tl-over > div { position: absolute; top: 0; bottom: 0; left: 12px; right: 12px; }
 .tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); }
 .tl-playhead::before { content: ""; position: absolute; top: 0; left: -6px; border: 5px solid transparent; border-top: 7px solid var(--accent); }
-.tl-ins { margin-top: 0.6em; padding-top: 0.5em; border-top: 1px solid var(--line); }
-.tl-ins .tl-f { grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); }
-.tl-ins .acts { display: flex; flex-wrap: wrap; gap: 0.4em; align-items: center; margin-top: 0.4em; }
-.tl-ins .acts .lbl { color: var(--text-dim); min-width: 8rem; }
-.tl-saved .acts { display: flex; flex-wrap: wrap; gap: 0.35em; margin: 0.35em 0; }
-.tl-hr { border: 0; border-top: 1px solid var(--line); margin: 0.6em 0; }
+.tl-ins { min-width: 0; border-top: 1px solid var(--line); padding-top: 0.4em; }
+@media (min-width: 900px) { .tl-tlgrid.with-ins .tl-ins { border-top: 0; padding-top: 0; border-left: 1px solid var(--line); padding-left: 0.9em; } }
+.tl-ins .tl-f { grid-template-columns: 1fr 1fr; }
+.tl-ins .acts { display: flex; align-items: center; gap: 0.35em; margin-top: 0.3em; }
+.tl-ins .acts .lbl { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
+.tl-ins .acts .lbl em { font-style: normal; color: var(--text); }
+.tl-saved-hint { margin-top: 0.5em; }
 `;
 
 /**
@@ -112,17 +128,46 @@ export function createTimeline({
       <span class="tl-time" id="tl-time">0:00.0 / 0:10.0</span>
       <button type="button" id="tl-back" hidden title="Put the view back as it was before you scrubbed">Back to my view</button>
       <span class="tl-status grow" id="tl-status" role="status"></span>
-      <button type="button" id="tl-close" title="Close the timeline (it keeps its settings)">\u2715</button>
+      <div class="tl-tabs" role="tablist">
+        <button type="button" role="tab" data-tab="timeline" aria-selected="true">Timeline</button>
+        <button type="button" role="tab" data-tab="settings" aria-selected="false">Settings</button>
+        <button type="button" role="tab" data-tab="render" aria-selected="false">Render</button>
+        <button type="button" role="tab" data-tab="saved" id="tl-tab-saved" aria-selected="false">Saved</button>
+      </div>
+      <button type="button" class="tl-close" id="tl-close" title="Close the timeline (it keeps its settings)">\u2715</button>
     </div>
-    <div class="tl-grid">
-      <div class="tl-col tl-left">
-        <h3 class="tl-h">Settings</h3>
+    <div class="tl-body">
+      <div data-pane="timeline">
+        <div class="tl-tlgrid" id="tl-tlgrid">
+          <div class="tl-center">
+            <div class="tl-bar" data-for="path">
+              <button type="button" id="tl-addkey" title="Add the view you see now at the playhead">+ Add current view</button>
+              <span class="tl-inc" title="What a view you add records besides the camera">Include:
+                <label><input type="checkbox" id="tl-inc-clip" checked /> Clipping</label>
+                <label><input type="checkbox" id="tl-inc-crop" checked /> Cropping</label>
+                <label><input type="checkbox" id="tl-inc-tf" checked /> Transfer function</label>
+              </span>
+              <span id="tl-bm-wrap" style="display:inline-flex;gap:0.3em"><select id="tl-bm" style="max-width:11em"></select><button type="button" id="tl-addbm">+ Bookmark</button></span>
+              <button type="button" id="tl-clearkeys">Clear</button>
+            </div>
+            <div class="tl-tracks" id="tl-tracks">
+              <div class="tl-row ruler"><span class="tl-lbl" id="tl-rlbl">Time</span><div class="tl-axis" id="tl-ruler"></div></div>
+              <div id="tl-lanes"></div>
+              <div class="tl-over"><div><div class="tl-playhead" id="tl-playhead" style="left:0%"></div></div></div>
+            </div>
+            <p class="tl-sub one" id="tl-hint"></p>
+          </div>
+          <div class="tl-ins" id="tl-inspector" hidden></div>
+        </div>
+      </div>
+
+      <div data-pane="settings" hidden>
         <div class="tl-f">
           <label data-for="path turntable"><span>Duration (s)</span><input id="tl-duration" type="number" min="1" max="600" step="1" value="10" /></label>
           <label data-for="path"><span>At the end</span><select id="tl-loop"><option value="stop">Stop at the last view</option><option value="return">Return to the first</option><option value="pingpong">Back and forth</option></select></label>
           <label data-for="path"><span>Movement</span><select id="tl-ease"><option value="smooth">Ease in and out</option><option value="linear">Constant speed</option></select></label>
           <label data-for="turntable"><span>Turn (degrees)</span><input id="tl-angle" type="number" min="1" max="3600" value="360" /></label>
-          <label data-for="turntable" class="wide"><span>Rotate about</span><select id="tl-turnaxis">
+          <label data-for="turntable" class="wide"><span>Rotate about</span><select id="tl-turnaxis" title="The X, Y and Z axes and the axes of the current view (vertical, horizontal, line of sight) run through the centre of the volume. Counter-clockwise is seen from the positive end of the axis, so the volume seems to turn the other way.">
             <option value="up">The up axis (through the point you look at)</option>
             <optgroup label="Through the centre of the volume">
               <option value="x">X axis</option><option value="y">Y axis</option><option value="z">Z axis</option>
@@ -143,29 +188,11 @@ export function createTimeline({
           <label class="check wide" data-for="path turntable"><input type="checkbox" id="tl-preload" checked /> <span>Load the data of the whole path first</span></label>
           <label class="check wide"><input type="checkbox" id="tl-touch" checked /> <span>Pause when I touch the view</span></label>
         </div>
-        <p class="tl-sub" data-for="turntable">The camera circles the volume from the view you have now, with the clipping and transfer function it has now. The X, Y and Z axes and the axes of the current view (vertical, horizontal, line of sight) run through the centre of the volume. Counter-clockwise is seen from the positive end of the axis, so the volume seems to turn the other way. A full turn ends where it began, so it loops.</p>
+        <p class="tl-sub" data-for="turntable">The camera circles the volume from the view you have now, with the clipping, cropping and transfer function it has now. A full turn ends where it began, so it loops.</p>
         <p class="tl-sub" data-for="slices">Rendered slices are drawn at one pixel per voxel with the window and colours of the slice view. Slices are fetched one at a time while a sweep plays.</p>
       </div>
 
-      <div class="tl-col tl-center">
-        <div class="tl-bar" data-for="path">
-          <button type="button" id="tl-addkey" title="Add the view you see now at the playhead">+ Add current view</button>
-          <label style="display:inline-flex;gap:0.3em;align-items:center"><input type="checkbox" id="tl-inc-clip" checked style="width:auto" /> Clipping</label>
-          <label style="display:inline-flex;gap:0.3em;align-items:center"><input type="checkbox" id="tl-inc-tf" checked style="width:auto" /> Transfer function</label>
-          <span id="tl-bm-wrap" style="display:inline-flex;gap:0.3em"><select id="tl-bm" style="max-width:11em"></select><button type="button" id="tl-addbm">+ Bookmark</button></span>
-          <button type="button" id="tl-clearkeys">Clear</button>
-        </div>
-        <div class="tl-tracks" id="tl-tracks">
-          <div class="tl-row ruler"><span class="tl-lbl" id="tl-rlbl">Time</span><div class="tl-axis" id="tl-ruler"></div></div>
-          <div id="tl-lanes"></div>
-          <div class="tl-over"><div><div class="tl-playhead" id="tl-playhead" style="left:0%"></div></div></div>
-        </div>
-        <p class="tl-sub" id="tl-hint"></p>
-        <div class="tl-ins" id="tl-inspector" hidden></div>
-      </div>
-
-      <div class="tl-col tl-right">
-        <h3 class="tl-h">Render</h3>
+      <div data-pane="render" hidden>
         <div class="tl-f">
           <label data-for="path turntable"><span>Image size</span><select id="tl-size">${sizeOptions}</select></label>
           <label><span>Frames per second</span><select id="tl-fps"><option>24</option><option>25</option><option selected>30</option><option>60</option></select></label>
@@ -173,17 +200,20 @@ export function createTimeline({
           <label id="tl-q-wrap"><span>Video quality</span><select id="tl-quality"><option value="medium">Medium</option><option value="high" selected>High</option><option value="max">Very high</option></select></label>
           <label id="tl-fmt-wrap" hidden><span>Image format</span><select id="tl-fmt"><option value="png">PNG</option><option value="tiff">TIFF</option><option value="jpeg">JPEG</option></select></label>
         </div>
+        <div class="tl-line"><button type="button" class="primary" id="tl-go">Render animation</button><button type="button" id="tl-copylink" title="A link that plays this animation, without saving it">Copy link to this animation</button></div>
         <p class="tl-sub" id="tl-info"></p>
-        <div class="tl-bar"><button type="button" class="primary" id="tl-go">Render animation</button><button type="button" id="tl-copylink" title="A link that plays this animation, without saving it">Copy link to this animation</button></div>
-        <div class="tl-saved" id="tl-saved-box">
-          <hr class="tl-hr" />
-          <h3 class="tl-h">Saved paths</h3>
-          <select id="tl-saved" aria-label="Saved paths" style="width:100%"></select>
-          <div class="acts"><button type="button" id="tl-load">Load</button><button type="button" id="tl-playsaved">Play</button><button type="button" id="tl-link">Copy link</button><button type="button" id="tl-delete">Delete</button></div>
-          <input id="tl-name" maxlength="80" placeholder="Name" style="width:100%" aria-label="Name for saving" />
-          <div class="acts"><button type="button" id="tl-save-local">Save in this browser</button><button type="button" id="tl-save-shared">Save for everyone</button></div>
-          <p class="tl-sub" id="tl-save-hint"></p>
+      </div>
+
+      <div data-pane="saved" id="tl-saved-box" hidden>
+        <div class="tl-line first">
+          <select id="tl-saved" aria-label="Saved paths"></select>
+          <button type="button" id="tl-load">Load</button><button type="button" id="tl-playsaved">Play</button><button type="button" id="tl-link">Copy link</button><button type="button" id="tl-delete">Delete</button>
         </div>
+        <div class="tl-line">
+          <input id="tl-name" maxlength="80" placeholder="Name" aria-label="Name for saving" />
+          <button type="button" id="tl-save-local">Save in this browser</button><button type="button" id="tl-save-shared">Save for everyone</button>
+        </div>
+        <p class="tl-sub tl-saved-hint" id="tl-save-hint"></p>
       </div>
     </div>`;
   dock.append(root);
@@ -196,6 +226,18 @@ export function createTimeline({
   const kind = () => $("tl-kind").value;
   const duration = () => Math.max(1, num("tl-duration") || 10);
   const setStatus = (text, error = false) => { $("tl-status").textContent = text; $("tl-status").classList.toggle("error", error); };
+
+  // ------------------------------------------------------------------------------------ the tabs
+  let tab = "timeline";
+  function showTab(name) {
+    if (!TABS.includes(name)) return;
+    tab = name;
+    root.querySelectorAll("[data-pane]").forEach((el) => { el.hidden = el.dataset.pane !== name; });
+    root.querySelectorAll("[data-tab]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
+    if (name === "timeline") renderLanes(); // the ruler is laid out for the width it has now
+  }
+  /** Only a path has a timeline of views: the others start on their settings. */
+  const fitTab = () => { if (tab === "timeline" && kind() !== "path") showTab("settings"); };
 
   let playheadU = 0;
   let sel = -1; // the selected key
@@ -250,7 +292,7 @@ export function createTimeline({
     $("tl-lanes").hidden = !isPath;
     renderRuler();
     $("tl-rlbl").textContent = isPath ? "Time" : KIND_LABEL[kind()];
-    if (!isPath) { $("tl-lanes").innerHTML = ""; return; }
+    if (!isPath) { $("tl-lanes").innerHTML = ""; $("tl-hint").textContent = ""; return; }
     const D = duration();
     $("tl-lanes").innerHTML = LANES.map(([lane, label, has]) => {
       const mine = keys.map((k, i) => [k, i]).filter(([k]) => has(k));
@@ -259,14 +301,16 @@ export function createTimeline({
         return `<div class="tl-seg" style="left:${a.at * 100}%;width:${Math.max(0, k.at - a.at) * 100}%"></div>`;
       });
       const marks = mine.map(([k, i]) => {
-        const cls = ["tl-key", lane === "view" ? "" : "on", i === sel ? "sel" : "", lane === "clip" && isClipped(k) ? "cut" : ""].filter(Boolean).join(" ");
-        const title = `${k.name ? `${k.name} \u2014 ` : ""}View ${i + 1} at ${fmtTime(k.at * D)}${lane === "clip" ? (isClipped(k) ? " (cuts the volume)" : " (whole volume)") : ""}`;
+        const cls = ["tl-key", lane === "view" ? "" : "on", i === sel ? "sel" : "", (lane === "clip" && isClipped(k)) || (lane === "crop" && isCropped(k)) ? "cut" : ""].filter(Boolean).join(" ");
+        const note = lane === "clip" ? (isClipped(k) ? " (cuts the volume)" : " (whole volume)") : lane === "crop" ? (isCropped(k) ? " (crops the volume)" : " (no cropping)") : "";
+        const title = `${k.name ? `${k.name} \u2014 ` : ""}View ${i + 1} at ${fmtTime(k.at * D)}${note}`;
         return `<button type="button" class="${cls}" data-i="${i}" data-lane="${lane}" style="left:${k.at * 100}%" title="${esc(title)}" aria-label="${esc(title)}"></button>`;
       });
       return `<div class="tl-row" data-lane="${lane}"><span class="tl-lbl">${label}</span><div class="tl-axis">${segs.join("")}${marks.join("")}</div></div>`;
     }).join("");
-    $("tl-hint").textContent = keys.length ? "Click the strip to move the playhead (the view follows); drag a diamond to retime it; Delete removes the selected view."
-      : "Turn the 3D view to where the path should start and add it; move the playhead, change the view and add the next one. Two or more views make a path.";
+    $("tl-hint").textContent = keys.length ? "Click the strip to move the playhead; drag a diamond to retime it; Delete removes the selected view."
+      : "Turn the 3D view to where the path starts and add it; move the playhead, change the view, add the next. Two views make a path.";
+    $("tl-hint").title = $("tl-hint").textContent;
   }
 
   function setPlayhead(u) {
@@ -281,19 +325,26 @@ export function createTimeline({
     const box = $("tl-inspector");
     const k = keys[sel];
     box.hidden = kind() !== "path" || !k;
+    $("tl-tlgrid").classList.toggle("with-ins", !box.hidden);
     if (box.hidden) return;
     const D = duration();
+    const clipState = hasClip(k) ? (isClipped(k) ? "cutting" : "whole volume") : "left alone";
+    const cropState = hasCrop(k) ? (isCropped(k) ? `${k.crop.length} shape${k.crop.length === 1 ? "" : "s"}` : "none") : "left alone";
+    const tfState = hasTf(k) ? esc(k.tf.preset) : "left alone";
+    // "left alone" = the view does not touch it, so it stays as it is on the way there
     box.innerHTML = `
       <div class="tl-f">
         <label><span>View ${sel + 1} of ${keys.length}</span><input id="tl-k-name" maxlength="80" placeholder="Name (optional)" value="${esc(k.name || "")}" /></label>
         <label><span>Time (s)</span><input id="tl-k-time" type="number" min="0" max="${D}" step="0.1" value="${(k.at * D).toFixed(2)}" /></label>
       </div>
-      <div class="acts"><span class="lbl">View</span><button type="button" id="tl-k-view" title="Replace this view's camera with the one you see now">Take current view</button>
-        <button type="button" id="tl-k-rm">Remove view</button></div>
-      <div class="acts"><span class="lbl">Clipping planes ${hasClip(k) ? (isClipped(k) ? "(cutting)" : "(whole volume)") : "(left alone)"}</span>
-        <button type="button" id="tl-k-clip">Take current</button><button type="button" id="tl-k-clip-x" ${hasClip(k) ? "" : "disabled"}>Clear</button></div>
-      <div class="acts"><span class="lbl">Transfer function ${hasTf(k) ? `(${esc(k.tf.preset)})` : "(left alone)"}</span>
-        <button type="button" id="tl-k-tf">Take current</button><button type="button" id="tl-k-tf-x" ${hasTf(k) ? "" : "disabled"}>Clear</button></div>`;
+      <div class="acts"><span class="lbl">Camera</span><button type="button" id="tl-k-view" title="Replace this view's camera with the one you see now">Take current</button>
+        <button type="button" id="tl-k-rm" title="Remove this view from the path">Remove</button></div>
+      <div class="acts"><span class="lbl" title="Clipping planes: ${clipState}">Clipping <em>${clipState}</em></span>
+        <button type="button" id="tl-k-clip" title="Record the clipping planes you see now">Take current</button><button type="button" id="tl-k-clip-x" ${hasClip(k) ? "" : "disabled"}>Clear</button></div>
+      <div class="acts"><span class="lbl" title="Crop shapes: ${cropState}">Cropping <em>${cropState}</em></span>
+        <button type="button" id="tl-k-crop" title="Record the crop shapes you see now (none switched on: no cropping at this view)">Take current</button><button type="button" id="tl-k-crop-x" ${hasCrop(k) ? "" : "disabled"}>Clear</button></div>
+      <div class="acts"><span class="lbl" title="Transfer function: ${tfState}">Transfer fn <em>${tfState}</em></span>
+        <button type="button" id="tl-k-tf" title="Record the transfer function you see now">Take current</button><button type="button" id="tl-k-tf-x" ${hasTf(k) ? "" : "disabled"}>Clear</button></div>`;
     const viewer = () => getViewer();
     const withViewer = (fn) => { try { fn(viewer()); acceptView(); changed(); } catch (err) { setStatus(err.message || String(err), true); } };
     $("tl-k-name").addEventListener("change", (e) => { keys[sel].name = e.target.value.trim().slice(0, 80) || undefined; if (!keys[sel].name) delete keys[sel].name; changed(); });
@@ -305,6 +356,8 @@ export function createTimeline({
     }));
     $("tl-k-clip").addEventListener("click", () => withViewer((v) => { const n = readPose(v.camera, v.renderer); keys[sel].clipMin = n.clipMin; keys[sel].clipMax = n.clipMax; }));
     $("tl-k-clip-x").addEventListener("click", () => { delete keys[sel].clipMin; delete keys[sel].clipMax; changed(); });
+    $("tl-k-crop").addEventListener("click", () => withViewer((v) => { const shapes = readCrop(v.renderer); if (!shapes) throw new Error("This viewer has no crop shapes"); keys[sel].crop = shapes; }));
+    $("tl-k-crop-x").addEventListener("click", () => { delete keys[sel].crop; changed(); });
     $("tl-k-tf").addEventListener("click", () => withViewer((v) => { const tf = readTf(v); if (!tf) throw new Error("This view has no transfer function"); keys[sel].tf = tf; }));
     $("tl-k-tf-x").addEventListener("click", () => { delete keys[sel].tf; changed(); });
   }
@@ -480,6 +533,7 @@ export function createTimeline({
     }
     setPlayhead(0);
     changed();
+    fitTab();
   }
 
   function fillSlices() {
@@ -613,7 +667,9 @@ export function createTimeline({
     renderLanes();
     renderInspector();
     refresh();
+    fitTab();
   });
+  root.addEventListener("click", (e) => { const b = e.target.closest?.("[data-tab]"); if (b) showTab(b.dataset.tab); });
   $("tl-slice").addEventListener("pointerdown", fillSlices);
   for (const id of ["tl-bm", "tl-start"]) $(id).addEventListener("pointerdown", () => { refreshBookmarks(); });
   $("tl-bm-wrap").style.display = bookmarks ? "inline-flex" : "none";
@@ -622,7 +678,7 @@ export function createTimeline({
   $("tl-addkey").addEventListener("click", () => {
     try {
       const v = getViewer();
-      const pose = readPose(v.camera, $("tl-inc-clip").checked ? v.renderer : null, $("tl-inc-tf").checked ? v : null);
+      const pose = readPose(v.camera, v.renderer, $("tl-inc-tf").checked ? v : null, { clip: $("tl-inc-clip").checked, crop: $("tl-inc-crop").checked });
       acceptView();
       addKey(pose);
     } catch (err) { setStatus(err.message || String(err), true); }
@@ -756,7 +812,7 @@ export function createTimeline({
         } catch (err) { setStatus(err.message || String(err), true); }
       });
     }
-  } else $("tl-saved-box").hidden = true;
+  } else $("tl-tab-saved").hidden = true; // (the pane stays, hidden: refreshSaved() still fills its list)
 
   // ------------------------------------------------------------------------------- show / hide
   const api = {
@@ -771,6 +827,8 @@ export function createTimeline({
       // start on what is on screen: a slice sweep when only slices are shown
       if (!keys.length && !threeDVisible() && slicesList().length) $("tl-kind").value = "slices";
       else if (!keys.length && threeDVisible() && !slicesList().length && kind() === "slices") $("tl-kind").value = "turntable";
+      showTab(tab); // (lays the ruler out too)
+      fitTab();
       renderLanes();
       renderInspector();
       setPlayhead(playheadU);

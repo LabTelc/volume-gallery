@@ -193,3 +193,21 @@ test("a link a little under the inflate limit still works", async () => {
   const spec = await decodeSpec(text);
   assert.equal(spec.keys.length, 200);
 });
+
+test("crop shapes of a view are kept in range, one per kind, and nothing else gets through", () => {
+  const sphere = { type: "sphere", mode: "outside", enabled: true, center: [0.5, 2, -1], size: [9, 0, 0], rotation: [0, 0, 720] };
+  const spec = sanitizeSpec(path({ keys: [pose({ crop: [sphere, { ...sphere, mode: "inside" }, { type: "cone" }, null, { ...sphere, type: "box", enabled: false }, { ...sphere, type: "plane", center: [1, 2] }, { ...sphere, type: "cylinder", evil: "x" }] }), pose()] }));
+  const crop = spec.keys[0].crop;
+  assert.deepEqual(crop.map((s) => s.type), ["sphere", "cylinder"]); // duplicates, unknown kinds, disabled and broken shapes are left out
+  assert.deepEqual(crop[0], { type: "sphere", mode: "outside", enabled: true, center: [0.5, 1, 0], size: [0.75, 0, 0], rotation: [0, 0, 360] });
+  assert.equal("evil" in crop[1], false);
+  assert.equal(spec.keys[1].crop, undefined); // a view without crop leaves the cropping alone
+  assert.deepEqual(sanitizeSpec(path({ keys: [pose({ crop: [] }), pose()] })).keys[0].crop, []); // an empty list means "no cropping"
+  assert.equal(sanitizeSpec(path({ keys: [pose({ crop: "all" }), pose()] })).keys[0].crop, undefined);
+});
+
+test("crop shapes survive a round trip through a link", async () => {
+  const sphere = { type: "sphere", mode: "inside", enabled: true, center: [0.25, 0.5, 0.75], size: [0.2, 0, 0], rotation: [10, 20, 30] };
+  const spec = sanitizeSpec(path({ keys: [pose({ crop: [sphere] }), pose({ crop: [] })] }));
+  assert.deepEqual((await decodeSpec(await encodeSpec(spec))).keys.map((k) => k.crop), [[sphere], []]);
+});

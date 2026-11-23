@@ -1950,6 +1950,39 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
         }
         countEl.textContent = cropList.some((s) => s.enabled) ? `${cropList.filter((s) => s.enabled).length} on` : "";
         syncEditUi();
+
+        // An animation changes the crop shapes (the renderer already has them): the list, the switches, the sides
+        // and the sliders follow.
+        let cropFrame = 0;
+        const onCropChanged = (evt) => {
+          if (!panel.isConnected) { window.removeEventListener("vg-crop-changed", onCropChanged); return; } // the panel was rebuilt
+          for (const shape of cropList) {
+            const s = (evt.detail?.shapes ?? []).find((q) => q.type === shape.type);
+            if (!s) continue;
+            shape.enabled = !!s.enabled;
+            shape.mode = s.mode === "outside" ? "outside" : "inside";
+            shape.center = [...s.center];
+            shape.size = [...s.size];
+            shape.rotation = [...s.rotation];
+          }
+          cancelAnimationFrame(cropFrame);
+          cropFrame = requestAnimationFrame(() => {
+            for (const shape of cropList) {
+              const t = shape.type;
+              const root = panel.querySelector(`.ctl-crop[data-crop="${t}"]`);
+              if (!root) continue;
+              root.querySelector(`[data-role="crop-on-${t}"]`).checked = shape.enabled;
+              root.querySelector(".ctl-crop-body").hidden = !shape.enabled;
+              root.querySelectorAll(`[data-role="crop-mode-${t}"] .ctl-segment`).forEach((b) => b.classList.toggle("active", b.dataset.mode === shape.mode));
+              syncSliders(shape);
+            }
+            const on = cropList.filter((s) => s.enabled).length;
+            countEl.textContent = on ? `${on} on` : "";
+            editor?.refresh();
+            syncEditUi();
+          });
+        };
+        window.addEventListener("vg-crop-changed", onCropChanged);
       }
 
       // An animation changes the transfer function (colours, opacity curve, window, density): the panel follows.
