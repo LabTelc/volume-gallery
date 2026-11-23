@@ -373,8 +373,18 @@ class BookmarkOptions(BaseModel):
     cam: Optional[List[float]] = Field(default=None, max_length=12)   # 3, 6 or 12 numbers (a rolled view has 12)
     clipMin: Optional[List[float]] = Field(default=None, min_length=3, max_length=3)
     clipMax: Optional[List[float]] = Field(default=None, min_length=3, max_length=3)
+    # The crop shapes of the 3D view (all kinds, switched on or off, as the viewer reports them); a bookmark made
+    # before they were saved has none and leaves the cropping as it is when it is opened.
+    crop: Optional[List[CropShapeSpec]] = Field(default=None, max_length=4)
     showWireframe: Optional[bool] = None
     showAxis: Optional[bool] = None
+
+    @field_validator("crop")
+    @classmethod
+    def _crop_one_per_kind(cls, v):
+        if v is not None and len({s.type for s in v}) != len(v):
+            raise ValueError("a view has at most one crop shape of each kind")
+        return v
 
     @field_validator("cam")
     @classmethod

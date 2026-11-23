@@ -234,11 +234,7 @@ class TestRevocation:
         assert fetch(client, volume.id, token).status_code == 200
         assert fetch(client, volume.id, token, "lod0.bin").status_code == 200
 
-    # ---- Known gaps. Each test says what SHOULD happen; they are expected to fail until the code changes. ----
-
-    @pytest.mark.xfail(strict=False, reason=(
-        "_check_file_token_cached keeps a verified token for up to VG_FILE_META_CACHE_TTL_SECONDS (60 s), "
-        "so a token that was already used keeps working that long after its share is deleted."))
+    # ---- Revocation must take effect immediately ----
     def test_revocation_applies_immediately_even_to_a_token_that_was_just_used(
         self, client, editor, auth, make_volume, create_share, open_share
     ):
@@ -249,10 +245,7 @@ class TestRevocation:
         client.delete(f"/api/shares/{share['id']}", headers=auth(editor))
         assert fetch(client, volume.id, token).status_code == 403
 
-    @pytest.mark.xfail(strict=False, reason=(
-        "deps.file_token_revoked only checks that the account still exists and is enabled; "
-        "taking a reader's VolumeAccess grant away does not stop the file tokens they already hold "
-        "(up to FILE_TOKEN_EXPIRE_MINUTES, 30 min by default)."))
+
     def test_revoking_a_grant_stops_the_readers_outstanding_tokens(self, client, db, editor, reader, auth, make_volume):
         volume = make_volume()
         db.add(VolumeAccess(user_id=reader.id, volume_id=volume.id))

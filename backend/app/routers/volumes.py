@@ -20,7 +20,7 @@ from ..config import settings
 from .. import audit, workdir, jobs
 from ..organize import apply_asset_update, split_tags
 from ..helpers import SliceError, open_volume_slices, plane_response_parts, stream_blocks, MAX_BLOCKS_PER_REQUEST
-from ..helpers import volume_meta_path, process_zip, decompose_tiff_stack, RANGE_RE, SHARDED_FILE_RE, decompress_gzip, detect_level_is_tiled66, unshuffle_tiled66_to_66_bytes, compress_gzip_66, ensure_legacy66_level_files, compress_gzip_66_exact_size
+from ..helpers import volume_meta_path, process_zip, decompose_tiff_stack, RANGE_RE, SHARDED_FILE_RE, decompress_gzip, unshuffle_tiled66_to_66_bytes, ensure_legacy66_level_files, compress_gzip_66_exact_size
 from ..helpers import read_thumbnail, write_thumbnail, store_thumbnail, remove_thumbnail, thumbnail_response
 from ..helpers import histogram_path
 from ..utils import SLUG_RE, _now  # noqa: F401 - re-exported for the other asset routers
@@ -67,6 +67,11 @@ def _check_file_token_cached(token: str, volume_id: int, kind: str) -> dict:
         exp_ts, payload = cached
         if now < exp_ts:
             if payload.get("vol") == volume_id and payload.get("kind") == kind:
+                # The signature was verified when the token was cached, but the share / grant / account
+                # behind it can be revoked at any time, so that is re-checked on every hit.
+                if file_token_revoked(payload):
+                    _TOKEN_CACHE.pop(token, None)
+                    raise HTTPException(status_code=403, detail="Invalid or expired link")
                 return payload
             raise HTTPException(status_code=403, detail="Invalid or expired link")
         _TOKEN_CACHE.pop(token, None)
@@ -614,10 +619,12 @@ def volume_data_access_url(
                 else "Volume processing failed — see its status log"
             ),
         )
-    if min_level is not None and volume.num_lod_levels and min_level >= volume.num_lod_levels:
+    # Volume.num_lod_levels stores maxLod, the highest level INDEX, so the level count is one more.
+    level_count = volume.num_lod_levels + 1 if volume.num_lod_levels is not None else None
+    if min_level is not None and level_count is not None and min_level >= level_count:
         raise HTTPException(
             status_code=400,
-            detail=f"min_level must be less than this volume's {volume.num_lod_levels} levels",
+            detail=f"min_level must be less than this volume's {level_count} levels",
         )
     # A share link's resolution cap is enforced here, not left to the viewer: whatever min_level
     # the caller sends (or leaves out), the token never lets through a finer level than the share.

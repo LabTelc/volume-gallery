@@ -8,6 +8,15 @@ const SHARE_TOKEN_KEY = "vg_share_token";
 const SHARE_CODE_KEY = "vg_share_code";
 const RAIL_COLLAPSED_KEY = "vg_rail_collapsed";
 
+// The primary auth token lives in a variable AND in sessionStorage. The variable alone is lost on
+// every page load (sign-in ends with a navigation), which made every page redirect back to the login.
+// sessionStorage is per tab and is cleared when the tab closes.
+let runtimeToken = null;
+
+function _storedToken() {
+    try { return sessionStorage.getItem(TOKEN_KEY); } catch (_) { return null; }
+}
+
 // Consume #vg_st=<token>&vg_sc=<code> from /s/<code> redirect immediately on module load
 (function _consumeShareHash() {
   if (typeof window === "undefined" || !window.location.hash.startsWith("#vg_st=")) return;
@@ -42,25 +51,55 @@ export function getToken() {
     if (window.location.pathname.startsWith("/viewers/") && sessionStorage.getItem(SHARE_TOKEN_KEY)) {
         return sessionStorage.getItem(SHARE_TOKEN_KEY);
     }
-    return sessionStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(SHARE_TOKEN_KEY);
+    return runtimeToken || _storedToken() || sessionStorage.getItem(SHARE_TOKEN_KEY);
 }
 
+ function _jwtPayload(token) {
+     try {
+         const parts = String(token || "").split(".");
+         if (parts.length < 2) return null;
+         const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+         const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+         return JSON.parse(atob(padded));
+     } catch (_) {
+         return null;
+     }
+ }
+
 export function getRole() {
+    if (sessionStorage.getItem(SHARE_TOKEN_KEY) && !sessionStorage.getItem(TOKEN_KEY)) return "guest";
+    const payload = _jwtPayload(sessionStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(SHARE_TOKEN_KEY));
+    if (payload && typeof payload.role === "string" && payload.role) return payload.role;
+    if (payload && Array.isArray(payload.roles) && payload.roles.length) return String(payload.roles[0]);
+    // Backward compatibility for sessions created before role derivation from JWT.
     return sessionStorage.getItem(ROLE_KEY) || (sessionStorage.getItem(SHARE_TOKEN_KEY) ? "guest" : null);
 }
 
 export function getUsername() {
-    return sessionStorage.getItem(USER_KEY) || (sessionStorage.getItem(SHARE_CODE_KEY) ? `shared:${sessionStorage.getItem(SHARE_CODE_KEY)}` : "guest");
+    const stored = sessionStorage.getItem(USER_KEY);
+    if (stored) return stored; // backward compatibility with older sessions
+    const sub = _jwtPayload(_storedToken())?.sub;
+    if (typeof sub === "string" && sub) return sub;
+    const shareCode = sessionStorage.getItem(SHARE_CODE_KEY);
+    if (shareCode) return `shared:${shareCode}`;
+    return sessionStorage.getItem(ROLE_KEY) ? "user" : "guest";
 }
 
 export function setSession(token, role, username) {
-    sessionStorage.setItem(TOKEN_KEY, token);
-    sessionStorage.setItem(ROLE_KEY, role);
-    sessionStorage.setItem(USER_KEY, username);
+    runtimeToken = token;
+    try {
+        sessionStorage.setItem(TOKEN_KEY, token);
+        sessionStorage.removeItem(SHARE_TOKEN_KEY); // a real sign-in replaces any guest share session
+    } catch (_) { /* storage blocked: the token then only survives until the next page load */ }
+    // The role is read from the token's claims (getRole); the stored one is a fallback only.
+    if (role) { try { sessionStorage.setItem(ROLE_KEY, role); } catch (_) { /* ignore */ } }
+    // The username is not stored: getUsername() reads it from the token. Kept for API compatibility.
+    void username;
 }
 
 
 export function clearSession() {
+    runtimeToken = null;
     sessionStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(ROLE_KEY);
     sessionStorage.removeItem(USER_KEY);

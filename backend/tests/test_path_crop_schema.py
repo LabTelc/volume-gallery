@@ -34,3 +34,28 @@ def test_a_view_without_crop_leaves_the_cropping_alone():
 def test_broken_crop_shapes_are_refused(bad):
     with pytest.raises(ValidationError):
         PoseSpec(**POSE, crop=bad)
+
+
+# ------------------------------------------------------------------ bookmarks
+
+def _bookmark(crop):
+    from app.schemas import BookmarkSpec
+    return BookmarkSpec(options={"mode": "dvr", "crop": crop})
+
+
+def test_a_bookmark_keeps_all_crop_shapes_switched_on_or_off():
+    shapes = [{**SPHERE, "enabled": True}, {**SPHERE, "type": "box", "mode": "inside", "enabled": False}]
+    spec = _bookmark(shapes)
+    again = type(spec)(**spec.model_dump(mode="json"))
+    assert [(s.type, s.enabled, s.mode) for s in again.options.crop] == [("sphere", True, "outside"), ("box", False, "inside")]
+
+
+def test_a_bookmark_without_crop_shapes_leaves_the_cropping_alone():
+    from app.schemas import BookmarkSpec
+    assert BookmarkSpec(options={"mode": "dvr"}).options.crop is None
+
+
+@pytest.mark.parametrize("bad", [[SPHERE, SPHERE], [{**SPHERE, "center": [3, 0, 0]}], [{**SPHERE, "type": "cone"}], [SPHERE] * 5])
+def test_a_bookmark_with_broken_crop_shapes_is_refused(bad):
+    with pytest.raises(ValidationError):
+        _bookmark(bad)

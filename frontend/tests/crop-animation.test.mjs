@@ -101,3 +101,13 @@ test("applyCrop sends all four kinds, switches the others off and skips what did
   assert.ok(r.shapes.every((s) => !s.enabled));
   assert.equal(applyCrop({}, [shape("sphere")]), false); // a renderer without crop shapes is left alone
 });
+
+test("a bookmark's crop shapes become a key's: only those that are on", async () => {
+  const { poseOfBookmark } = await import("../js/animate.js");
+  const entry = (options, pose = {}) => ({ name: "b", spec: { pose: pose, options } });
+  const base = { back: [0, 0, 1], up: [0, 1, 0], distance: 5, target: [0, 0, 0] };
+  const key = poseOfBookmark(entry({ crop: [shape("plane", { enabled: false }), shape("box", { mode: "outside" })] }, base));
+  assert.deepEqual(key.crop.map((s) => [s.type, s.mode]), [["box", "outside"]]);
+  assert.deepEqual(poseOfBookmark(entry({ crop: [shape("box", { enabled: false })] }, base)).crop, []); // all off: an uncropped view
+  assert.equal(poseOfBookmark(entry({}, base)).crop, undefined); // an older bookmark: the cropping is left alone
+});

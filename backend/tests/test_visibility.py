@@ -147,10 +147,6 @@ class TestVolumeDataAccessUrl:
         assert client.get(url, params={"min_level": 3}, headers=auth(editor)).status_code == 400
         assert client.get(url, params={"min_level": -1}, headers=auth(editor)).status_code == 422
 
-    @pytest.mark.xfail(strict=False, reason=(
-        "Off-by-one in routers/volumes.py: Volume.num_lod_levels stores maxLod (the highest level INDEX), "
-        "but `min_level >= num_lod_levels` treats it as a count, so the coarsest level is refused. "
-        "A single-level volume (maxLod = 0) skips the check entirely."))
     def test_the_coarsest_level_is_a_valid_min_level(self, client, editor, auth, make_volume):
         volume = make_volume(levels=3)
         response = client.get(f"/api/volumes/{volume.id}/volume-data-access-url", params={"min_level": 2}, headers=auth(editor))

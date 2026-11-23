@@ -26,7 +26,7 @@ os.environ.update({
     "VG_DATA_DIR": str(_TMP / "data"),
     "VG_PROCESSING_DIR": str(_TMP / "processing"),
     "VG_FRONTEND_DIR": str(_FRONTEND),
-    "VG_SECRET_KEY": "test-secret-key-0123456789abcdef0123456789abcdef",
+    "VG_SECRET_KEY": "test-secret-key-0123456789abcdef0123456789abcdef-0123456789abcde",
     "VG_REDIS_URL": "",               # no job queue: uploads would be converted in-process
     "VG_SHARD_ACCEL_REDIRECT": "0",   # serve files from Python, not through nginx's X-Accel-Redirect
     "VG_HISTOGRAM_BACKFILL": "0",

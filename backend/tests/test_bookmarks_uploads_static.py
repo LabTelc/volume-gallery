@@ -24,7 +24,7 @@ def bookmarks_url(volume_id):
 
 class TestBookmarks:
     def create(self, client, editor, auth, volume, name="Front view", spec=None, expect=200):
-        response = client.post(bookmarks_url(volume.id), json={"name": name, "spec": spec or SPEC}, headers=auth(editor))
+        response = client.post(bookmarks_url(volume.id), json={"name": name, "spec": SPEC if spec is None else spec}, headers=auth(editor))
         assert response.status_code == expect, response.text
         return response.json()
 

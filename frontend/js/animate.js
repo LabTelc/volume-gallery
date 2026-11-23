@@ -488,6 +488,9 @@ export function poseOfBookmark(entry) {
       for (const k of ["windowCenter", "windowWidth", "densityScale"]) if (Number.isFinite(o[k])) pose.tf[k] = o[k];
     }
   }
+  if (!hasCrop(pose) && Array.isArray(o.crop)) { // a bookmark lists every shape, on or off; a key keeps the ones that are on
+    pose.crop = o.crop.filter((s) => s && s.enabled && CROP_TYPES.includes(s.type)).map(cropCopy);
+  }
   return { ...pose, name: entry.name };
 }
 

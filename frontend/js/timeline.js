@@ -688,6 +688,7 @@ export function createTimeline({
     if (!e) return;
     const key = poseOfBookmark(e);
     if (!$("tl-inc-clip").checked) { delete key.clipMin; delete key.clipMax; }
+    if (!$("tl-inc-crop").checked) delete key.crop;
     if (!$("tl-inc-tf").checked) delete key.tf;
     addKey(key);
   });
