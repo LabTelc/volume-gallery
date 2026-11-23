@@ -42,7 +42,7 @@ class Settings:
 
     # Histograms (transfer function backdrop): threads used for the computation, and whether
     # volumes that lack one get it computed in the background at start-up.
-    HISTOGRAM_THREADS: int = int(os.environ.get("VG_HISTOGRAM_THREADS", str(min(4, os.cpu_count() or 2))))
+    HISTOGRAM_THREADS: int = int(os.environ.get("VG_HISTOGRAM_THREADS") or min(4, os.cpu_count() or 2))  # empty = default
     HISTOGRAM_BACKFILL: bool = os.environ.get("VG_HISTOGRAM_BACKFILL", "1").lower() not in ("0", "false", "no", "off")
 
     # --- Job queue (Redis + RQ) ---

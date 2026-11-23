@@ -48,10 +48,10 @@ libraries from `frontend/dist/vendor`, which only the Docker image fills: the po
 Detailed documentation has been split into the following guides:
 
 *   **[Usage & UI Guide](docs/usage_ui_guide.md)**: Uploading volumes, UI features (bookmarks, animations, slice sweeps), branding, and histograms.
+*   **[Configuration](docs/configuration.md)**: Every setting of `.env` / `docker-compose.yml` in one table, with defaults.
 *   **[Deployment Guide](docs/deployment_guide.md)**: TrueNAS SCALE deployment, HTTPS/TLS requirements, Docker Hub publishing, and backups.
 *   **[Architecture & Internals](docs/architecture_internals.md)**: Backend/frontend design, job queues (Redis), background processing, and permissions.
 *   **[Kiln Volume Format](docs/kiln_volume_format.md)**: Deep dive into the sharded volume format specification.
-
 ## License
 
 Copyright (C) 2026 ITAM CAS CZ, Antonín Zajíček <zajicek@itam.cas.cz>
