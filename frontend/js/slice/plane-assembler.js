@@ -215,6 +215,34 @@ export const STREAM_END = 0xffffffff;
 export const BLOCK_ERROR = 0xfffffffe;
 const HEADER = 16;
 
+/** Whether this browser can unpack deflated blocks (DecompressionStream). */
+export const canUnpack = () => typeof DecompressionStream === "function";
+
+/**
+ * The voxels of a packed block (POST .../blocks with enc "deflate"; see pack_block on the server): a method
+ * byte, then the voxels as they are (0) or zlib-deflated with the bytes of each voxel in planes (1).
+ * Resolves with a typed array of `count` voxels.
+ */
+export async function unpackBlock(payload, TA, count) {
+  const isz = TA.BYTES_PER_ELEMENT;
+  const body = payload.subarray(1);
+  if (payload[0] === 0) {
+    if (body.length !== count * isz) throw new Error("A stored block has the wrong size");
+    return new TA(body.slice().buffer);
+  }
+  if (payload[0] !== 1) throw new Error(`Unknown block packing ${payload[0]}`);
+  const ds = new DecompressionStream("deflate");
+  const bytes = new Uint8Array(await new Response(new Blob([body]).stream().pipeThrough(ds)).arrayBuffer());
+  if (bytes.length !== count * isz) throw new Error("A deflated block has the wrong size");
+  if (isz === 1) return new TA(bytes.buffer);
+  const out = new Uint8Array(bytes.length);
+  for (let b = 0; b < isz; b++) {
+    const src = b * count;
+    for (let i = 0, o = b; i < count; i++, o += isz) out[o] = bytes[src + i];
+  }
+  return new TA(out.buffer);
+}
+
 /**
  * Parses the body of POST .../blocks as it arrives in chunks of any size: records of a 16-byte header
  * (gx, gy, gz, payload bytes; uint32 little-endian) and the block's voxels. A payload size of 0 is an empty
@@ -228,8 +256,9 @@ export class BlockStreamParser {
    * @param {number} o.blockBytes    the payload size of a full block
    * @param {(gx, gy, gz, data: ArrayBufferView|null) => void} o.onBlock
    */
-  constructor({ Array: TA, blockBytes, onBlock }) {
+  constructor({ Array: TA, blockBytes, onBlock, packed = false }) {
     this.TA = TA;
+    this.packed = packed; // payloads are packed (see unpackBlock): handed on as bytes, of any size
     this.blockBytes = blockBytes;
     this.onBlock = onBlock;
     this.buf = new Uint8Array(0);
@@ -263,12 +292,12 @@ export class BlockStreamParser {
         continue;
       }
       if (n === BLOCK_ERROR) throw new Error(`The server could not read block (${gx}, ${gy}, ${gz})`);
-      if (n !== this.blockBytes) throw new Error(`Block (${gx}, ${gy}, ${gz}) has ${n} bytes, expected ${this.blockBytes}`);
+      if (!this.packed && n !== this.blockBytes) throw new Error(`Block (${gx}, ${gy}, ${gz}) has ${n} bytes, expected ${this.blockBytes}`);
       if (buf.length - pos - HEADER < n) break;
       const copy = buf.slice(pos + HEADER, pos + HEADER + n); // a fresh, aligned buffer
       pos += HEADER + n;
       this.count++;
-      this.onBlock(gx, gy, gz, new this.TA(copy.buffer));
+      this.onBlock(gx, gy, gz, this.packed ? copy : new this.TA(copy.buffer));
     }
     this.buf = pos < buf.length ? buf.slice(pos) : new Uint8Array(0);
   }

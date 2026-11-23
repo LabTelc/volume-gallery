@@ -1,4 +1,4 @@
-// Thin fetch wrapper around the backend API. Keeps the JWT in localStorage —
+// Thin fetch wrapper around the backend API. Keeps the JWT in sessionStorage —
 // fine for a small internal-network appliance; put this behind HTTPS in prod.
 
 const TOKEN_KEY = "vg_token";
@@ -8,6 +8,15 @@ const SHARE_TOKEN_KEY = "vg_share_token";
 const SHARE_CODE_KEY = "vg_share_code";
 const RAIL_COLLAPSED_KEY = "vg_rail_collapsed";
 
+// The primary auth token lives in a variable AND in sessionStorage. The variable alone is lost on
+// every page load (sign-in ends with a navigation), which made every page redirect back to the login.
+// sessionStorage is per tab and is cleared when the tab closes.
+let runtimeToken = null;
+
+function _storedToken() {
+    try { return sessionStorage.getItem(TOKEN_KEY); } catch (_) { return null; }
+}
+
 // Consume #vg_st=<token>&vg_sc=<code> from /s/<code> redirect immediately on module load
 (function _consumeShareHash() {
   if (typeof window === "undefined" || !window.location.hash.startsWith("#vg_st=")) return;
@@ -15,14 +24,16 @@ const RAIL_COLLAPSED_KEY = "vg_rail_collapsed";
     const params = new URLSearchParams(window.location.hash.slice(1));
     const st = params.get("vg_st");
     const sc = params.get("vg_sc");
-    if (st) sessionStorage.setItem(SHARE_TOKEN_KEY, st);
-    if (sc) sessionStorage.setItem(SHARE_CODE_KEY, sc);
+    // Both values come from the URL fragment, so only the shapes the backend produces are kept:
+    // a JWT (base64url parts separated by dots) and a share code (letters, digits, '-' and '_').
+    if (st && /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+){0,2}$/.test(st)) sessionStorage.setItem(SHARE_TOKEN_KEY, st);
+    if (sc && /^[A-Za-z0-9_-]{1,64}$/.test(sc)) sessionStorage.setItem(SHARE_CODE_KEY, sc);
     history.replaceState(null, "", window.location.pathname + window.location.search);
   } catch (_) {}
 })();
 
 export function isGuestShareSession() {
-    return Boolean(sessionStorage.getItem(SHARE_TOKEN_KEY)) && !localStorage.getItem(TOKEN_KEY);
+    return Boolean(sessionStorage.getItem(SHARE_TOKEN_KEY)) && !sessionStorage.getItem(TOKEN_KEY);
 }
 
 export function getShareToken() {
@@ -40,28 +51,58 @@ export function getToken() {
     if (window.location.pathname.startsWith("/viewers/") && sessionStorage.getItem(SHARE_TOKEN_KEY)) {
         return sessionStorage.getItem(SHARE_TOKEN_KEY);
     }
-    return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(SHARE_TOKEN_KEY);
+    return runtimeToken || _storedToken() || sessionStorage.getItem(SHARE_TOKEN_KEY);
 }
 
+ function _jwtPayload(token) {
+     try {
+         const parts = String(token || "").split(".");
+         if (parts.length < 2) return null;
+         const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+         const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+         return JSON.parse(atob(padded));
+     } catch (_) {
+         return null;
+     }
+ }
+
 export function getRole() {
-    return localStorage.getItem(ROLE_KEY) || (sessionStorage.getItem(SHARE_TOKEN_KEY) ? "guest" : null);
+    if (sessionStorage.getItem(SHARE_TOKEN_KEY) && !sessionStorage.getItem(TOKEN_KEY)) return "guest";
+    const payload = _jwtPayload(sessionStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(SHARE_TOKEN_KEY));
+    if (payload && typeof payload.role === "string" && payload.role) return payload.role;
+    if (payload && Array.isArray(payload.roles) && payload.roles.length) return String(payload.roles[0]);
+    // Backward compatibility for sessions created before role derivation from JWT.
+    return sessionStorage.getItem(ROLE_KEY) || (sessionStorage.getItem(SHARE_TOKEN_KEY) ? "guest" : null);
 }
 
 export function getUsername() {
-    return localStorage.getItem(USER_KEY) || (sessionStorage.getItem(SHARE_CODE_KEY) ? `shared:${sessionStorage.getItem(SHARE_CODE_KEY)}` : "guest");
+    const stored = sessionStorage.getItem(USER_KEY);
+    if (stored) return stored; // backward compatibility with older sessions
+    const sub = _jwtPayload(_storedToken())?.sub;
+    if (typeof sub === "string" && sub) return sub;
+    const shareCode = sessionStorage.getItem(SHARE_CODE_KEY);
+    if (shareCode) return `shared:${shareCode}`;
+    return sessionStorage.getItem(ROLE_KEY) ? "user" : "guest";
 }
 
 export function setSession(token, role, username) {
-    localStorage.setItem(TOKEN_KEY, token);
-    localStorage.setItem(ROLE_KEY, role);
-    localStorage.setItem(USER_KEY, username);
+    runtimeToken = token;
+    try {
+        sessionStorage.setItem(TOKEN_KEY, token);
+        sessionStorage.removeItem(SHARE_TOKEN_KEY); // a real sign-in replaces any guest share session
+    } catch (_) { /* storage blocked: the token then only survives until the next page load */ }
+    // Role and username are not stored: getRole() and getUsername() read them from the token's claims.
+    // The arguments are kept for API compatibility with existing callers.
+    void role;
+    void username;
 }
 
 
 export function clearSession() {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(ROLE_KEY);
-    localStorage.removeItem(USER_KEY);
+    runtimeToken = null;
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(ROLE_KEY);
+    sessionStorage.removeItem(USER_KEY);
     clearShareSession();
     // The volume bricks the service worker (js/sw.js) cached belong to whoever was signed in.
     try { navigator.serviceWorker?.controller?.postMessage({ type: "CLEAR_BRICK_CACHE" }); } catch (_) { /* no worker */ }
@@ -87,7 +128,7 @@ const NAV_ICONS = {
 let brandingPromise = null;
 
 // Resolves with the branding (never rejects: falls back to the defaults). Cached per page.
-// The last branding the server sent is kept in localStorage, so the next page load can draw the
+// The last branding the server sent is kept in sessionStorage, so the next page load can draw the
 // right name and logo straight away instead of the defaults followed by a visible swap.
 const BRANDING_CACHE_KEY = "vg_branding";
 
@@ -98,7 +139,7 @@ function normalizeBranding(b) {
 // Synchronous: the cached branding, or null on the very first visit (or if storage is unavailable).
 export function getCachedBranding() {
     try {
-        const raw = localStorage.getItem(BRANDING_CACHE_KEY);
+        const raw = sessionStorage.getItem(BRANDING_CACHE_KEY);
         return raw ? normalizeBranding(JSON.parse(raw)) : null;
     } catch (_) {
         return null;
@@ -112,7 +153,7 @@ export function getBranding() {
             .catch(() => null)
             .then((b) => {
                 if (b) {
-                    try { localStorage.setItem(BRANDING_CACHE_KEY, JSON.stringify(b)); } catch (_) { /* full or blocked */ }
+                    try { sessionStorage.setItem(BRANDING_CACHE_KEY, JSON.stringify(b)); } catch (_) { /* full or blocked */ }
                     return normalizeBranding(b);
                 }
                 return getCachedBranding() || normalizeBranding({}); // server unreachable: keep what we had
@@ -141,6 +182,16 @@ export function escapeHtml(s) {
     }[c]));
 }
 
+// A URL that is safe to put into href / location: only http(s) (and mailto when allowed) survive;
+// anything else (javascript:, data:, ...) gives "". Relative URLs are resolved against the page.
+export function safeUrl(url, { mailto = false } = {}) {
+    try {
+        const u = new URL(String(url ?? ""), window.location.href);
+        if (u.protocol === "http:" || u.protocol === "https:" || (mailto && u.protocol === "mailto:")) return u.href;
+    } catch (_) { /* not a URL */ }
+    return "";
+}
+
 // <img> tags for the logo: one, or a light and a dark one (shown according to the theme).
 export function brandLogoHtml(b, cls = "brand-logo") {
     if (!b.logo_url) return "";
@@ -156,7 +207,7 @@ export function contactItems(b) {
     if (c.email) items.push(`<a href="mailto:${escapeHtml(c.email)}">Contact</a>`);
     if (c.phone) items.push(`<a href="tel:${escapeHtml(c.phone.replace(/[^+\d]/g, ""))}">Phone</a>`);
     if (c.website) {
-        items.push(`<a href="${escapeHtml(c.website)}" target="_blank" rel="noopener noreferrer">Web</a>`);
+        items.push(`<a href="${escapeHtml(safeUrl(c.website))}" target="_blank" rel="noopener noreferrer">Web</a>`);
     }
     if (c.address) items.push(`<span>${escapeHtml(c.address)}</span>`);
     return items;
@@ -164,7 +215,7 @@ export function contactItems(b) {
 
 export function linkItems(b) {
     return (b.links || []).map((l) =>
-        `<a href="${escapeHtml(l.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(l.label)}</a>`);
+        `<a href="${escapeHtml(safeUrl(l.url))}" target="_blank" rel="noopener noreferrer">${escapeHtml(l.label)}</a>`);
 }
 
 // Puts the configured name and logo into the side rail and the page title.
@@ -765,16 +816,16 @@ async function publicPost(path, body) {
 const THEME_KEY = "vg_theme";
 
 export function getThemePref() {
-    const v = localStorage.getItem(THEME_KEY);
+    const v = sessionStorage.getItem(THEME_KEY);
     return v === "light" || v === "dark" ? v : "system";
 }
 
 export function setThemePref(pref) {
     if (pref === "light" || pref === "dark") {
-        localStorage.setItem(THEME_KEY, pref);
+        sessionStorage.setItem(THEME_KEY, pref);
         document.documentElement.dataset.theme = pref;
     } else {
-        localStorage.removeItem(THEME_KEY);
+        sessionStorage.removeItem(THEME_KEY);
         delete document.documentElement.dataset.theme;
     }
 }
@@ -842,14 +893,14 @@ export function renderShell(activePage, role, username) {
         </a>`
             )
             .join("");
-        const isCollapsed = localStorage.getItem(RAIL_COLLAPSED_KEY) === "1";
+        const isCollapsed = sessionStorage.getItem(RAIL_COLLAPSED_KEY) === "1";
 
   return `
     <div class="rail${isCollapsed ? " collapsed" : ""}">
       <div class="rail-top">
         <div class="rail-id">
           <div class="brand"${brandAttrs}>${brandInner}</div>
-          <div class="role-tag">${role}</div>
+          <div class="role-tag">${escapeHtml(role)}</div>
         </div>
         <button type="button" class="rail-collapse-btn" id="rail-collapse-btn" title="${isCollapsed ? "Expand sidebar" : "Minimize sidebar"}" aria-label="Toggle sidebar">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -874,7 +925,7 @@ export function renderShell(activePage, role, username) {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
             </button>
         </div>
-        <div class="signed-in-as">Signed in as <strong>${username}</strong></div>
+        <div class="signed-in-as">Signed in as <strong>${escapeHtml(username)}</strong></div>
         <button id="logout-btn" title="Sign out" aria-label="Sign out">
           <svg class="logout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
@@ -927,7 +978,7 @@ export function wireLogout() {
   if (rail && collapseBtn) {
     collapseBtn.addEventListener("click", () => {
       const collapsed = rail.classList.toggle("collapsed");
-      localStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? "1" : "0");
+      sessionStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? "1" : "0");
       collapseBtn.title = collapsed ? "Expand sidebar" : "Minimize sidebar";
       // Notify 3D viewers (kiln-render, 3DHOP, Potree) after the width transition
       setTimeout(() => window.dispatchEvent(new Event("resize")), 220);

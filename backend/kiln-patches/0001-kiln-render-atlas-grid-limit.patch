@@ -1,20 +1,31 @@
-diff --git a/lib/kiln-render.js b/lib/kiln-render.js
-index 0eeaa02..ce4e20a 100644
---- a/lib/kiln-render.js
-+++ b/lib/kiln-render.js
-@@ -6005,11 +6005,18 @@ const GRID_SIZE = Math.floor(ATLAS_SIZE / PHYSICAL_BRICK_SIZE);
- const BRICK_SIZE = LOGICAL_BRICK_SIZE;
- const DEFAULT_ATLAS_BUDGET_BYTES = 14e8;
- const MIN_GRID_SIZE = 6;
--function computeAtlasGrid(numChannels, bytesPerVoxel, budgetBytes = DEFAULT_ATLAS_BUDGET_BYTES) {
-+// Local patch: the atlas used to be capped at GRID_SIZE (10) slots per axis.
-+// It can now grow up to MAX_GRID_SIZE, limited by the device's 3D texture
-+// dimension (maxTextureDim3D / PHYSICAL_BRICK_SIZE) and the VRAM budget.
-+// Slot coordinates are stored in rgba8uint indirection texels, so anything
+diff --git a/src/core/config.ts b/src/core/config.ts
+index 4566ff5..3eb6fb5 100644
+--- a/src/core/config.ts
++++ b/src/core/config.ts
+@@ -26,19 +26,29 @@ export const DEFAULT_ATLAS_BUDGET_BYTES = 1_400_000_000;
+ // LOD plus a working set.
+ export const MIN_GRID_SIZE = 6;
+ 
++// Local patch: the atlas used to be capped at GRID_SIZE (10) slots per axis. It can now grow up to
++// MAX_GRID_SIZE, limited by the device's 3D texture dimension (maxTextureDim3D / PHYSICAL_BRICK_SIZE)
++// and the VRAM budget. Slot coordinates are stored in rgba8uint indirection texels, so anything
 +// below 256 would work; 32 is already a >2 GB-per-channel atlas.
-+const MAX_GRID_SIZE = 32;
-+function computeAtlasGrid(numChannels, bytesPerVoxel, budgetBytes = DEFAULT_ATLAS_BUDGET_BYTES, maxTextureDim3D = ATLAS_SIZE) {
-+  const maxGrid = Math.min(MAX_GRID_SIZE, Math.max(GRID_SIZE, Math.floor(maxTextureDim3D / PHYSICAL_BRICK_SIZE)));
++export const MAX_GRID_SIZE = 32;
++
+ /**
+  * Largest atlas grid (slots/axis) whose VRAM (numChannels × atlasSize³ ×
+- * bytesPerVoxel) fits budgetBytes, clamped to [MIN_GRID_SIZE, GRID_SIZE].
++ * bytesPerVoxel) fits budgetBytes, clamped to [MIN_GRID_SIZE, the largest grid the device's
++ * 3D texture limit allows (at most MAX_GRID_SIZE, and `gridLimit` when an allocation failed)].
+  */
+ export function computeAtlasGrid(
+   numChannels: number,
+   bytesPerVoxel: number,
+   budgetBytes: number = DEFAULT_ATLAS_BUDGET_BYTES,
++  maxTextureDim3D: number = ATLAS_SIZE,
++  gridLimit: number = Infinity,
+ ): { gridSize: number; atlasSize: number } {
++  const maxGrid = Math.min(MAX_GRID_SIZE, gridLimit, Math.max(GRID_SIZE, Math.floor(maxTextureDim3D / PHYSICAL_BRICK_SIZE)));
    const bytesPerChannel = budgetBytes / Math.max(1, numChannels);
    const voxelsPerChannel = bytesPerChannel / Math.max(1, bytesPerVoxel);
    const rawGrid = Math.floor(Math.cbrt(voxelsPerChannel) / PHYSICAL_BRICK_SIZE);
@@ -22,42 +33,85 @@ index 0eeaa02..ce4e20a 100644
 +  const gridSize = Math.max(MIN_GRID_SIZE, Math.min(maxGrid, rawGrid));
    return { gridSize, atlasSize: gridSize * PHYSICAL_BRICK_SIZE };
  }
- const CONFIG = {
-@@ -12061,10 +12068,35 @@ class KilnEngine {
-     );
-     const config = new DatasetConfig(metadata.dimensions, metadata.voxelSpacing, emptyThreshold, levelModel(pyramid, metadata));
-     const bytesPerVoxel = textureFormat === "r8unorm" ? 1 : 2;
--    const { gridSize, atlasSize } = computeAtlasGrid(metadata.numChannels, bytesPerVoxel, options.atlasBudgetBytes);
-+    const planned = computeAtlasGrid(
-+      metadata.numChannels,
-+      bytesPerVoxel,
-+      options.atlasBudgetBytes,
-+      device.limits?.maxTextureDimension3D
-+    );
-+    let gridSize = planned.gridSize;
-+    // Local patch: texture allocation failures are reported asynchronously
-+    // (not thrown), so catch them with an error scope and step the grid down
-+    // until the atlas fits instead of rendering from an invalid texture.
-+    let resources;
-+    for (; ; ) {
-+      device.pushErrorScope("out-of-memory");
-+      const attempt = new VolumeResources(device, effectiveBitDepth, textureFormat, config, metadata.numChannels, gridSize);
+ 
+diff --git a/src/engine.ts b/src/engine.ts
+index c854867..00eb5ec 100644
+--- a/src/engine.ts
++++ b/src/engine.ts
+@@ -14,7 +14,7 @@ import { Renderer, VolumeRenderMode } from './core/renderer.js';
+ import { VolumeResources } from './core/volume-resources.js';
+ import { TransferFunction, TFPreset } from './core/transfer-function.js';
+ import { StreamingManager } from './streaming/streaming-manager.js';
+-import { DatasetConfig, computeAtlasGrid, emptyBrickThresholdFor, normalizeWindow } from './core/config.js';
++import { DatasetConfig, computeAtlasGrid, emptyBrickThresholdFor, normalizeWindow, MIN_GRID_SIZE } from './core/config.js';
+ import { detectBest16BitFormat } from './core/volume.js';
+ import type { ViewParams } from './core/view.js';
+ import type { DataProvider, SourceSelection, VolumeMetadata } from './data/data-provider.js';
+@@ -178,6 +178,11 @@ interface GpuSetup {
+   textureFormat: GPUTextureFormat;
+   bitDepth: 8 | 16;
+   atlasBudgetBytes?: number;
++  /** Local patch: the device's 3D texture limit, and the largest atlas grid that has not run out of memory yet */
++  maxTextureDim3D?: number;
++  gridLimit: number;
++  /** The grid buildGpu used last (so a failed allocation can step down from it) */
++  gridSize: number;
+   /** Ray-guided brick selection; on by default, `?rayguide=0` turns it off */
+   rayGuided: boolean;
+   /** Experimental `?softreset=1`: soft accumulation reset on brick commits, per-pixel jitter */
+@@ -356,11 +361,35 @@ export class KilnEngine {
+ 
+     const gpu: GpuSetup = {
+       outputFormat: format, textureFormat, bitDepth: effectiveBitDepth, atlasBudgetBytes: options.atlasBudgetBytes,
++      maxTextureDim3D: device.limits?.maxTextureDimension3D, gridLimit: Infinity, gridSize: 0,
+       rayGuided: !isFlagDisabled('rayguide'),
+       softReset: isFlagEnabled('softreset'),
+       labels: new LabelGpu(device, options.labelBudgetBytes ?? DEFAULT_LABEL_BUDGET_BYTES),
+     };
+-    const { resources, renderer } = KilnEngine.buildGpu(device, metadata, config, gpu);
++    // Local patch: texture allocation failures are reported asynchronously (not thrown), so catch them
++    // with an error scope and step the grid down until the atlas fits instead of rendering from an
++    // invalid texture. buildGpu records the grid it used in gpu.gridSize and honours gpu.gridLimit.
++    let built: ReturnType<typeof KilnEngine.buildGpu>;
++    for (;;) {
++      device.pushErrorScope('out-of-memory');
++      let attempt: ReturnType<typeof KilnEngine.buildGpu>;
++      try {
++        attempt = KilnEngine.buildGpu(device, metadata, config, gpu);
++      } catch (e) {
++        await device.popErrorScope();
++        throw e;
++      }
 +      const oom = await device.popErrorScope();
-+      if (!oom) {
-+        resources = attempt;
-+        break;
++      if (!oom) { built = attempt; break; }
++      attempt.renderer.dispose();
++      attempt.resources.dispose();
++      if (gpu.gridSize <= MIN_GRID_SIZE) {
++        throw new RangeError(`Out of memory allocating the ${gpu.gridSize}\u00b3 brick atlas: ${oom.message}`);
 +      }
-+      attempt.dispose();
-+      if (gridSize <= MIN_GRID_SIZE) {
-+        throw new RangeError(`Out of memory allocating the ${gridSize}\u00b3 brick atlas: ${oom.message}`);
-+      }
-+      console.warn(`[Kiln] ${gridSize}\u00b3 atlas out of memory, retrying with ${gridSize - 1}\u00b3`);
-+      gridSize -= 1;
++      console.warn(`[Kiln] ${gpu.gridSize}\u00b3 atlas out of memory, retrying with ${gpu.gridSize - 1}\u00b3`);
++      gpu.gridLimit = gpu.gridSize - 1;
 +    }
-+    const atlasSize = gridSize * PHYSICAL_BRICK_SIZE;
-     const atlasVramMB = Math.round(metadata.numChannels * atlasSize ** 3 * bytesPerVoxel / 1e6);
-     console.log(`[Kiln] atlas grid ${gridSize}³ (${atlasSize}³ voxels) × ${metadata.numChannels} channel(s) ≈ ${atlasVramMB} MB VRAM`);
--    const resources = new VolumeResources(device, effectiveBitDepth, textureFormat, config, metadata.numChannels, gridSize);
-     const renderer = new Renderer(device, format, resources, config);
++    const { resources, renderer } = built;
      milestones.gpuReady = performance.now();
-     if (effectiveBitDepth === 16) {
+ 
+     // Metadata display defaults for every slot: 16-bit window, OMERO colours and visibility
+@@ -464,7 +493,7 @@ export class KilnEngine {
+    *  plus one working slot when finer levels exist; otherwise loading leaves permanent holes. */
+   private static assertBaseFits(metadata: VolumeMetadata, numChannels: number, gpu: GpuSetup): void {
+     const bytesPerVoxel = gpu.textureFormat === 'r8unorm' ? 1 : 2;
+-    const slots = computeAtlasGrid(numChannels, bytesPerVoxel, gpu.atlasBudgetBytes).gridSize ** 3;
++    const slots = computeAtlasGrid(numChannels, bytesPerVoxel, gpu.atlasBudgetBytes, gpu.maxTextureDim3D, gpu.gridLimit).gridSize ** 3;
+     const base = metadata.levels.find(level => level.lod === metadata.maxLod);
+     const baseBricks = base ? base.brickGrid[0] * base.brickGrid[1] * base.brickGrid[2] : 0;
+     const workingSlots = metadata.maxLod > 0 ? 1 : 0;
+@@ -484,7 +513,8 @@ export class KilnEngine {
+     // budget — a fixed 660³ × 4 channels (~2.3 GB) OOMs mobile GPUs at startup.
+     KilnEngine.assertBaseFits(metadata, metadata.numChannels, gpu);
+     const bytesPerVoxel = gpu.textureFormat === 'r8unorm' ? 1 : 2;
+-    const { gridSize, atlasSize } = computeAtlasGrid(metadata.numChannels, bytesPerVoxel, gpu.atlasBudgetBytes);
++    const { gridSize, atlasSize } = computeAtlasGrid(metadata.numChannels, bytesPerVoxel, gpu.atlasBudgetBytes, gpu.maxTextureDim3D, gpu.gridLimit);
++    gpu.gridSize = gridSize;
+     const atlasVramMB = Math.round((metadata.numChannels * atlasSize ** 3 * bytesPerVoxel) / 1e6);
+     console.log(`[Kiln] atlas grid ${gridSize}³ (${atlasSize}³ voxels) × ${metadata.numChannels} channel(s) ≈ ${atlasVramMB} MB VRAM`);
+ 

@@ -996,3 +996,8 @@ button.tag-chip.active { border-color: var(--accent); color: var(--accent); }
 .bm-sub { font-size: 0.78em; color: var(--text-dim); }
 .bm-actions { display: flex; gap: 0.3em; flex-shrink: 0; }
 .bm-actions button { padding: 0.1em 0.5em; font-size: 0.8em; }
+
+/* Viewer top bar: the "back to folder" button (js/back-link.js) comes first, and the title takes the space between
+   it and the actions on the right (each viewer page lays the bar out with space-between). */
+.viewer-topbar .viewer-back { flex-shrink: 0; display: inline-flex; }
+.viewer-topbar .viewer-back + .viewer-titles { flex: 1 1 auto; }

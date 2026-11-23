@@ -20,7 +20,7 @@ from ..config import settings
 from .. import audit, workdir, jobs
 from ..organize import apply_asset_update, split_tags
 from ..helpers import SliceError, open_volume_slices, plane_response_parts, stream_blocks, MAX_BLOCKS_PER_REQUEST
-from ..helpers import volume_meta_path, process_zip, decompose_tiff_stack, RANGE_RE, SHARDED_FILE_RE, decompress_gzip, detect_level_is_tiled66, unshuffle_tiled66_to_66_bytes, compress_gzip_66, ensure_legacy66_level_files, compress_gzip_66_exact_size
+from ..helpers import volume_meta_path, process_zip, decompose_tiff_stack, RANGE_RE, SHARDED_FILE_RE, decompress_gzip, unshuffle_tiled66_to_66_bytes, ensure_legacy66_level_files, compress_gzip_66_exact_size
 from ..helpers import read_thumbnail, write_thumbnail, store_thumbnail, remove_thumbnail, thumbnail_response
 from ..helpers import histogram_path
 from ..utils import SLUG_RE, _now  # noqa: F401 - re-exported for the other asset routers
@@ -67,6 +67,11 @@ def _check_file_token_cached(token: str, volume_id: int, kind: str) -> dict:
         exp_ts, payload = cached
         if now < exp_ts:
             if payload.get("vol") == volume_id and payload.get("kind") == kind:
+                # The signature was verified when the token was cached, but the share / grant / account
+                # behind it can be revoked at any time, so that is re-checked on every hit.
+                if file_token_revoked(payload):
+                    _TOKEN_CACHE.pop(token, None)
+                    raise HTTPException(status_code=403, detail="Invalid or expired link")
                 return payload
             raise HTTPException(status_code=403, detail="Invalid or expired link")
         _TOKEN_CACHE.pop(token, None)
@@ -614,10 +619,12 @@ def volume_data_access_url(
                 else "Volume processing failed — see its status log"
             ),
         )
-    if min_level is not None and volume.num_lod_levels and min_level >= volume.num_lod_levels:
+    # Volume.num_lod_levels stores maxLod, the highest level INDEX, so the level count is one more.
+    level_count = volume.num_lod_levels + 1 if volume.num_lod_levels is not None else None
+    if min_level is not None and level_count is not None and min_level >= level_count:
         raise HTTPException(
             status_code=400,
-            detail=f"min_level must be less than this volume's {volume.num_lod_levels} levels",
+            detail=f"min_level must be less than this volume's {level_count} levels",
         )
     # A share link's resolution cap is enforced here, not left to the viewer: whatever min_level
     # the caller sends (or leaves out), the token never lets through a finer level than the share.
@@ -777,6 +784,10 @@ class SliceBlocksRequest(BaseModel):
 
     blocks: List[int] = Field(max_length=4 * MAX_BLOCKS_PER_REQUEST)
     prefetch: bool = False  # warming the browser's cache: read after everything that is shown
+    enc: str = Field("identity", pattern="^(identity|deflate)$")  # deflate: payloads are packed (see pack_block)
+    # the plane the blocks are for (with enc "deflate"): only the voxels it reads are sent, the rest of each block
+    # is zero (see plane_masks). Such blocks are for this image only and must not be reused for another plane.
+    plane: Optional[SlicePlanRequest] = None
 
 
 @router.post("/{volume_id}/slices/{token}/plan")
@@ -810,20 +821,29 @@ async def slice_blocks(
 ):
     """Streams blocks as they are read, best first (see helpers.slices.stream_blocks for the wire format):
     records of a 16-byte header (gx, gy, gz, payload bytes; uint32 little-endian) and the block's voxels (z, y, x),
-    in the dtype of /info, ending with a record whose gx, gy, gz are all 0xFFFFFFFF and whose size field counts the
+    in the dtype of /info (with "enc": "deflate", a method byte and packed voxels, see pack_block), ending with a record whose gx, gy, gz are all 0xFFFFFFFF and whose size field counts the
     blocks sent. A payload size of 0 is an empty (all zero) block, 0xFFFFFFFE one that could not be read."""
     vs = await run_in_threadpool(_slice_store, volume_id, token, level, session)
     try:
         blocks = vs.check_blocks(body.blocks)
     except SliceError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc))
+    masks = None
+    if body.plane is not None and body.enc == "deflate":
+        p = body.plane
+        if not all(np.isfinite(c) for c in (*p.origin, *p.u, *p.v)):
+            raise HTTPException(status_code=422, detail="origin, u and v must be finite")
+        if p.width * p.height > 64_000_000:
+            raise HTTPException(status_code=413, detail="The image is too large")
+        masks = await run_in_threadpool(vs.plane_masks, tuple(p.origin), tuple(p.u), tuple(p.v), p.pixel, p.width, p.height)
     headers = {
         "Cache-Control": "no-store",
+        "X-Block-Crop": "1" if masks is not None else "0",  # 1: only the voxels the plane reads are filled in
         "X-Accel-Buffering": "no",  # nginx must pass records on as they come
         "X-Block-Count": str(len(blocks)),
         "X-Block-Bytes": str(vs.block_size ** 3 * np.dtype(vs.dtype).itemsize),
     }
-    return StreamingResponse(stream_blocks(vs, blocks, body.prefetch), media_type="application/octet-stream", headers=headers)
+    return StreamingResponse(stream_blocks(vs, blocks, body.prefetch, deflate=body.enc == "deflate", masks=masks), media_type="application/octet-stream", headers=headers)
 
 
 @router.get("/{volume_id}/slices/{token}/{axis}/{index}")

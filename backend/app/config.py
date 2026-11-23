@@ -42,7 +42,7 @@ class Settings:
 
     # Histograms (transfer function backdrop): threads used for the computation, and whether
     # volumes that lack one get it computed in the background at start-up.
-    HISTOGRAM_THREADS: int = int(os.environ.get("VG_HISTOGRAM_THREADS", str(min(4, os.cpu_count() or 2))))
+    HISTOGRAM_THREADS: int = int(os.environ.get("VG_HISTOGRAM_THREADS") or min(4, os.cpu_count() or 2))  # empty = default
     HISTOGRAM_BACKFILL: bool = os.environ.get("VG_HISTOGRAM_BACKFILL", "1").lower() not in ("0", "false", "no", "off")
 
     # --- Job queue (Redis + RQ) ---
@@ -100,9 +100,10 @@ class Settings:
 
     # --- Frontend static files ---
     # In the Docker image this is /frontend (see Dockerfile). For local dev
-    # (`uvicorn app.main:app --reload` from backend/), fall back to ../frontend.
+    # (`uvicorn app.main:app --reload` from backend/), fall back to ../frontend/dist, which
+    # `npm run build` in frontend/ makes (the pages are bundled by webpack, see the README).
     _default_frontend = "/frontend" if Path("/frontend").exists() else str(
-        Path(__file__).resolve().parent.parent.parent / "frontend"
+        Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
     )
     FRONTEND_DIR: str = os.environ.get("VG_FRONTEND_DIR", _default_frontend)
 

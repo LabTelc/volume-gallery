@@ -4,8 +4,9 @@
 // waited for until all the data it needs has streamed in and the image has converged) and goes to an MP4
 // video or a zip of images. The timeline panel (timeline.js) is the user interface for all of it.
 
-import { Mp4Sink, ZipSink, canEncodeVideo } from "/js/animate-io.js?v=org3";
-import { waitForRefined, captureRgba, afterFrames, resizeCanvasTo, accessExpiredError } from "/js/render-capture.js?v=org4";
+import { Mp4Sink, ZipSink, canEncodeVideo } from "./animate-io.js";
+import { waitForRefined, captureRgba, afterFrames, resizeCanvasTo, accessExpiredError } from "./render-capture.js";
+import { axesOf, eulerFromAxes } from "./crop-math.js";
 
 // ------------------------------------------------------------------------- camera poses (pure maths)
 
@@ -62,6 +63,79 @@ export const hasTf = (p) => !!p?.tf && Array.isArray(p.tf.points) && p.tf.points
 /** True when the pose's clipping box cuts something off (a pose without a box, or the whole volume, is not clipped). */
 export function isClipped(p) {
   return hasClip(p) && (p.clipMin.some((v) => v > 0) || p.clipMax.some((v) => v < 1));
+}
+
+// ------------------------------------------------------------------------------------- crop shapes
+// A view (key) can carry the crop shapes (plane, cube, cylinder, sphere; kiln-render patch 0007) as `crop`: the
+// list of the shapes that are switched on, each { type, mode, center, size, rotation } as the Crop panel has them.
+// An empty list means "no cropping"; a view without `crop` leaves the cropping alone. Between two views the
+// centre, the size and the rotation of a shape move smoothly (the rotation along the shortest turn); a shape that
+// only one of the views has, or whose side (inside / outside) differs, switches half way.
+
+export const CROP_TYPES = ["plane", "box", "cylinder", "sphere"];
+const CROP_DEFAULT_SIZE = { plane: [0, 0, 0], box: [0.25, 0.25, 0.25], cylinder: [0.25, 0.25, 0], sphere: [0.25, 0, 0] };
+
+export const hasCrop = (p) => Array.isArray(p?.crop);
+/** True when the pose's crop shapes cut something off. */
+export const isCropped = (p) => hasCrop(p) && p.crop.some((s) => s.enabled !== false);
+
+const cropCopy = (s) => ({ type: s.type, mode: s.mode === "outside" ? "outside" : "inside", enabled: true, center: [...s.center], size: [...s.size], rotation: [...s.rotation] });
+const cropDefault = (type) => ({ type, mode: "inside", enabled: false, center: [0.5, 0.5, 0.5], size: [...CROP_DEFAULT_SIZE[type]], rotation: [0, 0, 0] });
+
+/** The shapes of a renderer that are switched on, as a key's `crop` (null if the renderer has no crop shapes). */
+export function readCrop(renderer) {
+  if (typeof renderer?.getCropShapes !== "function") return null;
+  const round = (v) => Array.from(v, r4);
+  return renderer.getCropShapes().filter((s) => s.enabled && CROP_TYPES.includes(s.type)).map((s) => cropCopy({ ...s, center: round(s.center), size: round(s.size), rotation: round(s.rotation) }));
+}
+
+const quatOfEuler = (rotation) => { const ax = axesOf(rotation); return quatFromAxes(ax[1], ax[2]); };
+const eulerOfQuat = (q) => { const { up, back } = axesFromQuat(q); return eulerFromAxes([cross(up, back), up, back]); };
+
+/** The shapes a fraction t of the way from the shapes `a` to the shapes `b` (see the comment above). */
+export function interpolateCrop(a, b, t) {
+  const out = [];
+  for (const type of CROP_TYPES) {
+    const sa = a.find((s) => s.type === type && s.enabled !== false), sb = b.find((s) => s.type === type && s.enabled !== false);
+    if (!sa && !sb) continue;
+    if (!sa || !sb) { if ((sa && t < 0.5) || (sb && t >= 0.5)) out.push(cropCopy(sa ?? sb)); continue; }
+    const shape = cropCopy(t < 0.5 ? sa : sb);
+    if (t > 0 && t < 1) {
+      shape.center = lerp3(sa.center, sb.center, t);
+      shape.size = lerp3(sa.size, sb.size, t);
+      if (sa.rotation.some((v, i) => v !== sb.rotation[i])) shape.rotation = eulerOfQuat(slerp(quatOfEuler(sa.rotation), quatOfEuler(sb.rotation), t));
+    }
+    out.push(shape);
+  }
+  return out;
+}
+
+const sameVec = (a, b) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 1e-5);
+
+/**
+ * Gives a renderer the crop shapes of a key (shapes it does not list are switched off). Returns whether anything
+ * changed; the Crop panel follows through a "vg-crop-changed" event.
+ */
+export function applyCrop(renderer, shapes) {
+  if (typeof renderer?.setCropShapes !== "function" || !Array.isArray(shapes)) return false;
+  const current = renderer.getCropShapes?.() ?? [];
+  const list = CROP_TYPES.map((type) => {
+    const s = shapes.find((q) => q.type === type && q.enabled !== false);
+    if (s) return cropCopy(s);
+    const c = current.find((q) => q.type === type);
+    return c ? { ...cropCopy(c), enabled: false } : cropDefault(type);
+  });
+  const unchanged = list.every((s) => {
+    const c = current.find((q) => q.type === s.type);
+    if (!s.enabled) return !c?.enabled;
+    return !!c?.enabled && (c.mode === "outside" ? "outside" : "inside") === s.mode && sameVec(c.center, s.center) && sameVec(c.size, s.size) && sameVec(c.rotation, s.rotation);
+  });
+  if (unchanged) return false;
+  renderer.setCropShapes(list);
+  renderer.markDirty?.();
+  renderer.resetAccumulation?.();
+  window.dispatchEvent(new CustomEvent("vg-crop-changed", { detail: { shapes: list } }));
+  return true;
 }
 
 // ------------------------------------------------------------------- the transfer function of a view
@@ -221,9 +295,10 @@ export function applyTf(viewer, t) {
  * A camera pose: where the eye is (target + back * distance) and how it is turned. A key can also carry
  *  - `at`: when it is reached, as a fraction 0..1 of one pass (keys without it are spread evenly),
  *  - `clipMin` / `clipMax`: the clipping box of the 3D view (each [x, y, z], a fraction 0..1 of the volume),
- *  - `tf`: the transfer function (see readTf).
- * What a key leaves out stays as it is. If only one of two neighbouring keys has a clipping box or a transfer
- * function, that one is held rather than guessing what the other should have been.
+ *  - `tf`: the transfer function (see readTf),
+ *  - `crop`: the crop shapes that are on (see readCrop).
+ * What a key leaves out stays as it is. If only one of two neighbouring keys has a clipping box, a transfer
+ * function or crop shapes, that one is held rather than guessing what the other should have been.
  */
 export function interpolatePose(a, b, t) {
   const q = slerp(quatFromAxes(a.up, a.back), quatFromAxes(b.up, b.back), t);
@@ -242,6 +317,8 @@ export function interpolatePose(a, b, t) {
   }
   const ta = hasTf(a) ? a.tf : null, tb = hasTf(b) ? b.tf : null;
   if (ta || tb) pose.tf = interpolateTf(ta ?? tb, tb ?? ta, t);
+  const ka = hasCrop(a), kb = hasCrop(b);
+  if (ka || kb) pose.crop = interpolateCrop(ka ? a.crop : b.crop, kb ? b.crop : a.crop, t);
   return pose;
 }
 
@@ -346,16 +423,19 @@ export function playPose(spec, base, worldUp, t) {
 }
 
 /**
- * The camera as a pose. With the renderer (viewer.renderer) the pose also records the clipping box and with the
- * viewer the transfer function, so that writePose gives them back; without them the pose is the camera alone.
+ * The camera as a pose. With the renderer (viewer.renderer) the pose also records the clipping box and the crop
+ * shapes (`clip` / `crop` false leaves one of them out) and with the viewer the transfer function, so that
+ * writePose gives them back; without them the pose is the camera alone.
  */
-export function readPose(camera, renderer = null, viewer = null) {
+export function readPose(camera, renderer = null, viewer = null, { clip = true, crop = true } = {}) {
   if (!camera.back || !camera.up) throw new Error("3D animations need the free-rotation camera, which this build of the viewer does not have");
   const pose = { back: [...camera.back], up: [...camera.up], distance: camera.distance, target: [...camera.target] };
-  if (renderer?.clipMin && renderer?.clipMax) {
+  if (clip && renderer?.clipMin && renderer?.clipMax) {
     pose.clipMin = Array.from(renderer.clipMin, r4); // the box is stored as float32: keep the saved numbers short
     pose.clipMax = Array.from(renderer.clipMax, r4);
   }
+  const shapes = crop ? readCrop(renderer) : null;
+  if (shapes) pose.crop = shapes;
   const tf = viewer ? readTf(viewer) : null;
   if (tf) pose.tf = tf;
   return pose;
@@ -363,8 +443,8 @@ export function readPose(camera, renderer = null, viewer = null) {
 
 /**
  * Turns the camera to a pose. With the renderer, a pose that has a clipping box also sets it, and with the viewer a
- * pose that has a transfer function sets that (the controls panel is told through "vg-clip-changed" and
- * "vg-tf-changed" events so that its sliders follow). What a pose leaves out is left alone.
+ * pose that has a transfer function sets that, and one with crop shapes sets those (the controls panel is told
+ * through "vg-clip-changed", "vg-tf-changed" and "vg-crop-changed" events so that its sliders follow). What a pose leaves out is left alone.
  */
 export function writePose(camera, p, renderer = null, viewer = null) {
   camera.back = [...p.back];
@@ -388,6 +468,7 @@ export function writePose(camera, p, renderer = null, viewer = null) {
       window.dispatchEvent(new CustomEvent("vg-clip-changed"));
     }
   }
+  if (renderer && hasCrop(p)) applyCrop(renderer, p.crop);
   if (viewer && hasTf(p)) applyTf(viewer, p.tf);
 }
 
@@ -406,6 +487,9 @@ export function poseOfBookmark(entry) {
       if (preset === "custom") pose.tf.colorStops = o.tfColorStops.map((s) => ({ ...s }));
       for (const k of ["windowCenter", "windowWidth", "densityScale"]) if (Number.isFinite(o[k])) pose.tf[k] = o[k];
     }
+  }
+  if (!hasCrop(pose) && Array.isArray(o.crop)) { // a bookmark lists every shape, on or off; a key keeps the ones that are on
+    pose.crop = o.crop.filter((s) => s && s.enabled && CROP_TYPES.includes(s.type)).map(cropCopy);
   }
   return { ...pose, name: entry.name };
 }
@@ -473,7 +557,7 @@ export const SIZES = { current: "Current view size", "1280x720": "1280 \u00d7 72
 async function saveFiles(sink) {
   const files = await sink.finish();
   sink.saved = true;
-  const { downloadBlob } = await import("/js/export-image.js?v=org2");
+  const { downloadBlob } = await import("./export-image.js");
   for (const f of files) { downloadBlob(f.blob, f.filename); await new Promise((r) => setTimeout(r, 400)); }
   return files.map((f) => f.filename).join(", ");
 }

@@ -118,6 +118,7 @@ export class Measure3D {
       isoValue: v.isoValue,
       tf: { windowCenter: v.windowCenter, windowWidth: v.windowWidth, points: v.transferFunction?.getOpacityPoints?.(), densityScale: r?.densityScale ?? 1 },
       clip: r?.clipMin ? { min: Array.from(r.clipMin), max: Array.from(r.clipMax) } : null,
+      removed: typeof r?.isCropRemoved === "function" ? (p) => r.isCropRemoved(p) : null, // crop shapes (kiln-render patch 0007)
     });
     return hit ? { point: hit.point, acc: hit.accuracy } : null;
   }

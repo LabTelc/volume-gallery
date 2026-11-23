@@ -6,7 +6,7 @@ from sqlmodel import Session, select
 
 from .database import engine, get_session
 from .security import decode_token, password_fingerprint
-from .models import User, Role, ShareLink
+from .models import User, Role, ShareLink, VolumeAccess, MeshAccess, PointCloudAccess
 from .utils import get_utc_now
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
@@ -71,9 +71,22 @@ def get_current_user(
     return user
 
 
+# file-token kind -> (grant table, its asset column). A token's "vol" claim is the asset id.
+_GRANT_BY_KIND = {
+    "sharded": (VolumeAccess, VolumeAccess.volume_id),
+    "slice": (VolumeAccess, VolumeAccess.volume_id),
+    "volume-mesh-download": (VolumeAccess, VolumeAccess.volume_id),
+    "volume-mesh-view": (VolumeAccess, VolumeAccess.volume_id),
+    "mesh": (MeshAccess, MeshAccess.mesh_id),
+    "mesh-download": (MeshAccess, MeshAccess.mesh_id),
+    "pc-octree": (PointCloudAccess, PointCloudAccess.pointcloud_id),
+    "pc-download": (PointCloudAccess, PointCloudAccess.pointcloud_id),
+}
+
+
 def file_token_revoked(payload: dict) -> bool:
     """True when whatever a file token was issued for no longer holds: its share link was revoked or
-    has expired, or its account was disabled or deleted. (Tokens without either claim, issued before
+    has expired, or its account was disabled or deleted, or (for a reader) the grant it relied on was removed. (Tokens without either claim, issued before
     this check existed, are never refused here.)"""
     shr, uid = payload.get("shr"), payload.get("uid")
     if shr is None and uid is None:
@@ -88,7 +101,20 @@ def file_token_revoked(payload: dict) -> bool:
                 exp = exp.replace(tzinfo=timezone.utc)
             return exp <= get_utc_now()
         user = session.get(User, int(uid))
-        return user is None or user.disabled
+        if user is None or user.disabled:
+            return True
+            # A reader's access comes from a per-asset grant: taking it away must stop the tokens they hold.
+        if user.role in (Role.admin, Role.editor):
+            return False
+        kind, asset_id = payload.get("kind"), payload.get("vol")
+        grant = _GRANT_BY_KIND.get(kind)
+        if grant is None or asset_id is None:
+            return False
+        model, column = grant
+        found = session.exec(
+            select(model).where(model.user_id == user.id, column == int(asset_id))
+        ).first()
+        return found is None
 
 
 def require_roles(*roles: Role):

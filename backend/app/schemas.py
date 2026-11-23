@@ -230,6 +230,27 @@ class KeyTf(BaseModel):
         return self
 
 
+class CropShapeSpec(BaseModel):
+    """One crop shape (a plane, cube, cylinder or sphere) as the 3D view's Crop panel has it: `center` is a fraction
+    (0..1) of the volume box, `size` is in units of the volume's longest side, `rotation` is Euler degrees."""
+    type: Literal["plane", "box", "cylinder", "sphere"]
+    mode: Literal["inside", "outside"] = "inside"      # which part is removed
+    enabled: bool = True
+    center: List[float] = Field(min_length=3, max_length=3)
+    size: List[float] = Field(min_length=3, max_length=3)
+    rotation: List[float] = Field(min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def _ranges(self):
+        if any(not (0.0 <= x <= 1.0) for x in self.center):
+            raise ValueError("a crop shape's centre is a fraction between 0 and 1")
+        if any(not (0.0 <= x <= 1.0) for x in self.size):
+            raise ValueError("a crop shape's size is a fraction between 0 and 1")
+        if any(not (-360.0 <= x <= 360.0) for x in self.rotation):  # NaN fails these too
+            raise ValueError("a crop shape's rotation is in degrees, between -360 and 360")
+        return self
+
+
 class PoseSpec(BaseModel):
     """A camera pose of the 3D view: eye = target + back * distance; `up` is the camera's up vector."""
     back: List[float] = Field(min_length=3, max_length=3)
@@ -243,6 +264,9 @@ class PoseSpec(BaseModel):
     clipMax: Optional[List[float]] = Field(default=None, min_length=3, max_length=3)
     # The transfer function at this pose; a pose without one leaves it as it is.
     tf: Optional[KeyTf] = None
+    # The crop shapes that are on at this pose (an empty list: no cropping); a pose without the field leaves them as
+    # they are. At most one shape per kind.
+    crop: Optional[List[CropShapeSpec]] = Field(default=None, max_length=4)
     # When this view is reached, as a fraction 0..1 of one pass of the path (all views have it, or none: then they
     # are spread evenly).
     at: Optional[float] = Field(default=None, ge=0, le=1)
@@ -259,6 +283,13 @@ class PoseSpec(BaseModel):
     def _fractions(cls, v):
         if v is not None and any(not (0.0 <= x <= 1.0) for x in v):  # NaN fails this too
             raise ValueError("clipping bounds are fractions between 0 and 1")
+        return v
+
+    @field_validator("crop")
+    @classmethod
+    def _one_per_kind(cls, v):
+        if v is not None and len({s.type for s in v}) != len(v):
+            raise ValueError("a view has at most one crop shape of each kind")
         return v
 
     @model_validator(mode="after")
@@ -342,8 +373,18 @@ class BookmarkOptions(BaseModel):
     cam: Optional[List[float]] = Field(default=None, max_length=12)   # 3, 6 or 12 numbers (a rolled view has 12)
     clipMin: Optional[List[float]] = Field(default=None, min_length=3, max_length=3)
     clipMax: Optional[List[float]] = Field(default=None, min_length=3, max_length=3)
+    # The crop shapes of the 3D view (all kinds, switched on or off, as the viewer reports them); a bookmark made
+    # before they were saved has none and leaves the cropping as it is when it is opened.
+    crop: Optional[List[CropShapeSpec]] = Field(default=None, max_length=4)
     showWireframe: Optional[bool] = None
     showAxis: Optional[bool] = None
+
+    @field_validator("crop")
+    @classmethod
+    def _crop_one_per_kind(cls, v):
+        if v is not None and len({s.type for s in v}) != len(v):
+            raise ValueError("a view has at most one crop shape of each kind")
+        return v
 
     @field_validator("cam")
     @classmethod

@@ -1,17 +1,17 @@
-// One pane's slice worker (see worker-plane-client.js, which starts three: xy, xz, yz).
+// One pane's slice worker (see worker-plane-client.js, which starts three: xy, xz, yz). Bundled by webpack as a worker script.
 //
 // It does what the main thread's PlaneClient does for a plane - POST .../plan, the missing blocks streamed from
 // POST .../blocks, a PlaneAssembler building the image - off the main thread, against the block cache that the
 // three workers share (block-cache.js). The page gets the picture as it fills in: the whole image once, then the
 // rows that changed (about every 8 ms while blocks arrive), and draws them with WebGPU as before.
 //
-// Messages from the page:  init { baseUrl, cache, maxInflight } | url { baseUrl } | load { id, spec, channel,
+// Messages from the page:  init { baseUrl, cache, maxInflight, link } | url { baseUrl } | load { id, spec, channel,
 //   priority, prefetch, underlayId } | abort { id } | shown { id } | dispose
 // Messages to the page:    refresh { stale } (the token ran out: send a new url) | update { id, init?, rows?, pending, complete }
 //   | done { id, plan, stats } | error { id, name, message, status }
 
-import { PlaneClient, PlaneError } from "./plane-client.js?v=mpr2";
-import { SharedBlockCache } from "./block-cache.js?v=mpr2";
+import { PlaneClient, PlaneError } from "./plane-client.js";
+import { SharedBlockCache } from "./block-cache.js";
 
 const FLUSH_MS = 8;
 
@@ -31,8 +31,8 @@ function refreshUrl(refused) {
   });
 }
 
-function init({ baseUrl, cache, maxInflight }) {
-  client = new PlaneClient({ baseUrl, refreshUrl, cache: new SharedBlockCache(cache), maxInflight });
+function init({ baseUrl, cache, maxInflight, link }) {
+  client = new PlaneClient({ baseUrl, refreshUrl, cache: new SharedBlockCache(cache), maxInflight, link });
 }
 
 function sendUpdate(id, job, final) {
@@ -86,7 +86,7 @@ function load({ id, spec, channel, priority, prefetch, underlayId }) {
         sendUpdate(id, job, true);
         lastDone = { id, asm: assembler };
       }
-      self.postMessage({ type: "done", id, plan: { ...plan, blocks: [] }, stats: client.stats() });
+      self.postMessage({ type: "done", id, plan: { ...plan, blocks: [] }, stats: client.stats() }); // (a prefetch skipped on a slow link has no plan)
     })
     .catch((err) => {
       clearTimeout(job.timer);

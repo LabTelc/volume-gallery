@@ -53,29 +53,49 @@ RUN git clone --depth 1 --branch 2025.07 https://github.com/cnr-isti-vclab/vcgli
     && ldd "$JPEG_PLUGIN" | awk '/=> \//{print $3}' \
        | grep -v -E '/lib(c|m)\.so' | sort -u | xargs -I{} cp -L {} /opt/nexus/lib/
 
-# kiln-render: built from the v0.5.0 GitHub tag + our patch (backend/kiln-patches).
+# kiln-render: built from the v0.6.1 GitHub tag + our patches (backend/kiln-patches).
 # Its own stage so it is cached independently and never depends on what happens to
 # be in frontend/vendor. The patches lift the 10-slots-per-axis atlas cap, add finer LOD
-# levels and make the camera rotate freely (no poles, with roll).
+# levels, make the camera rotate freely (no poles, with roll), read tiled LOD-0 bricks,
+# add custom colour stops and crop shapes (plane, box, cylinder, sphere).
+# The patches are against kiln-render's TypeScript source (src/, test/) and apply before the
+# build; the library's own tests then run on the patched source. A patch that no longer fits a
+# new kiln-render release therefore fails the image build instead of shipping a broken viewer.
 FROM oven/bun:1-debian AS kiln
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git wget unzip \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /kiln
 # The download is checked against a SHA-256 (a changed archive fails the build); update it with the tag.
-ARG KILN_RENDER_SHA256=5e2fa62437ca063d980354c88817faacc28b2251641a3da72f26fd31d2ec6040
-RUN wget -q "https://github.com/MPanknin/kiln-render/archive/refs/tags/v0.5.0.zip" -O kiln-render.zip \
+ARG KILN_RENDER_SHA256=204b619038da44aed793f58a494e9d05b284ad27a80006a0b5a478d4546c26de
+RUN wget -q "https://github.com/MPanknin/kiln-render/archive/refs/tags/v0.6.1.zip" -O kiln-render.zip \
     && echo "${KILN_RENDER_SHA256}  kiln-render.zip" | sha256sum -c - \
     && unzip -q kiln-render.zip \
-    && mv kiln-render-0.5.0/* kiln-render-0.5.0/.[!.]* . 2>/dev/null || true \
-    && rm -rf kiln-render-0.5.0 kiln-render.zip \
-    && bun install --frozen-lockfile \
-    && bun run build:lib
+    && mv kiln-render-0.6.1/* kiln-render-0.6.1/.[!.]* . 2>/dev/null || true \
+    && rm -rf kiln-render-0.6.1 kiln-render.zip \
+    && bun install --frozen-lockfile
 COPY backend/kiln-patches /tmp/kiln-patches
 RUN sed -i 's/\r$//' /tmp/kiln-patches/*.patch \
     && git apply --ignore-whitespace /tmp/kiln-patches/*.patch \
+    && bun run test -- --run \
+    && bun run build:lib \
     && grep -q "MAX_GRID_SIZE = 32" lib/kiln-render.js \
     && grep -q "getFullOrbitState" lib/kiln-render.js \
-    && grep -q 'hSign = this.upAxis.startsWith("-") ? 1 : -1' lib/kiln-render.js
+    && grep -q 'hSign = this.upAxis.startsWith("-") ? 1 : -1' lib/kiln-render.js \
+    && grep -q "untileBrick66" lib/kiln-render.js \
+    && grep -q "setColorStops" lib/kiln-render.js \
+    && grep -q "setCropShapes" lib/kiln-render.js
+
+# The frontend, bundled with webpack (frontend/webpack.config.js): every file gets a hash of its content in its
+# name, so browsers never hold a stale copy and the pages need no ?v=... cache busting. The patched kiln-render
+# from the `kiln` stage is bundled into the volume page; it is copied with the chunks it loads on demand
+# (the Zarr codecs: blosc, lz4, zstd), which webpack splits into files of their own.
+FROM node:22-slim AS frontend
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend ./
+COPY --from=kiln /kiln/lib/*.js ./vendor/kiln-render/lib/
+RUN npm run build
 
 FROM python:3.12-slim
 
@@ -162,13 +182,11 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/app ./app
-COPY frontend /frontend
+# The bundled pages and scripts (the vendor directories above are not part of it: the Potree and 3DHOP
+# libraries the viewer pages load as classic scripts)
+COPY --from=frontend /frontend/dist /frontend
 # Default branding (branding.toml + logo); docker-compose mounts ./branding over it.
 COPY branding /branding
-
-# Patched kiln-render from the `kiln` stage. Copied after `COPY frontend` so it
-# always wins over any frontend/vendor/kiln-render copy in the build context.
-COPY --from=kiln /kiln/lib/kiln-render.js /frontend/vendor/kiln-render/lib/kiln-render.js
 
 # /processing is the mount point for the optional scratch directory (set
 # VG_PROCESSING_DIR=/processing to use it, see the README). No VOLUME for it:

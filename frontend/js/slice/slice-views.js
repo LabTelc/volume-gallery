@@ -11,15 +11,15 @@
 // (a PaneGeometry), fetches the blocks that plan reads from (the ones most pixels need first) and shows the image
 // as it fills in.
 
-import { createPlaneClient } from "./worker-plane-client.js?v=mpr2";
-import { SliceRenderer, requestSliceDevice } from "./slice-renderer.js?v=mpr2";
-import { SliceState } from "./cursor.js?v=mpr2";
-import { bindTouchGestures } from "./touch-gestures.js?v=org6";
+import { createPlaneClient } from "./worker-plane-client.js";
+import { SliceRenderer, requestSliceDevice } from "./slice-renderer.js";
+import { SliceState } from "./cursor.js";
+import { bindTouchGestures } from "./touch-gestures.js";
 import { lutFor, needsLut } from "./transfer-function.js";
-import { Overlay3D } from "./overlay-3d.js?v=mpr2";
-import { hitHandle, paneMeasureSvg, pointFromPane, roundPoint } from "./measure.js?v=mpr2";
-import { Measure3D } from "./measure-3d.js?v=mpr2";
-import { ensureMeasureStyles } from "./measure-ui.js?v=meas1";
+import { Overlay3D } from "./overlay-3d.js";
+import { hitHandle, paneMeasureSvg, pointFromPane, roundPoint } from "./measure.js";
+import { Measure3D } from "./measure-3d.js";
+import { ensureMeasureStyles } from "./measure-ui.js";
 import { niceScaleLength } from "../scalebar.js";
 import {
   lineInBox, AXES, AXIS_INFO, AXIS_COLORS, absView, clamp, clipLineToPolygon, dragWindow, isAligned,
@@ -358,7 +358,6 @@ export class Pane {
     const geom = st.paneGeom(this.axis);
     const view = absView(st.views[this.axis], geom);
     const flip = st.flips[this.axis];
-    const info = AXIS_INFO[this.axis];
     const toPx = (a, b) => planeToPixel(a, b, width, height, view, ppv, flip);
     const poly = geom.polygon().map(([a, b]) => toPx(a, b));
     const ptsAttr = poly.map((q) => `${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(" ");
@@ -846,7 +845,13 @@ export class SliceViews {
    */
   static async create({ grid, getAccessUrl, params = {}, fetchFn }) {
     const baseUrl = await getAccessUrl();
-    const client = await createPlaneClient({ baseUrl, refreshUrl: getAccessUrl, fetchFn }); // (workers sharing one cache where the page can have them)
+    // ?link=slow|fast forces the mode of the block transfer (a slow link gets only the voxels a plane reads); default: judged
+    let link = "auto";
+    try {
+      const q = (params.get ? params.get("link") : params.link) ?? localStorage.getItem("vg_slice_link");
+      if (q === "slow" || q === "fast") link = q;
+    } catch (_) { /* storage unavailable */ }
+    const client = await createPlaneClient({ baseUrl, refreshUrl: getAccessUrl, fetchFn, link }); // (workers sharing one cache where the page can have them)
     try {
       const info = await client.info();
       if (!textureFormatFor(info.dtype)) throw new Error(`Slice views do not support ${info.dtype} data`);
@@ -1116,6 +1121,7 @@ export class SliceViews {
   debugInfo() {
     const c = this.client.stats();
     return {
+      link: c.slow ? "slow (cropped blocks)" : "fast", linkMbps: c.mbps, croppedLoads: c.cropped,
       blocks: c.blocks, cacheMB: c.cacheMB, inflight: c.inflight, queued: c.queued,
       loads: c.loads, cachedBlocks: c.cached, fetchedBlocks: c.fetched, aborted: c.aborted, streamedMB: +(c.bytes / 1e6).toFixed(1),
       lastMs: +c.lastMs.toFixed(1), lastPlanMs: +c.lastPlanMs.toFixed(1), lastServerPlanMs: +c.lastServerPlanMs.toFixed(1),

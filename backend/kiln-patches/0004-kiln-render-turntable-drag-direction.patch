@@ -1,20 +1,41 @@
-diff --git a/lib/kiln-render.js b/lib/kiln-render.js
-index eeea379..e2529f4 100644
---- a/lib/kiln-render.js
-+++ b/lib/kiln-render.js
-@@ -7969,10 +7969,11 @@ class Camera {
+diff --git a/src/core/camera.ts b/src/core/camera.ts
+index ccca88a..f04075d 100644
+--- a/src/core/camera.ts
++++ b/src/core/camera.ts
+@@ -253,10 +253,11 @@ export class Camera {
        this.rotateFree(dx, dy, roll);
        return;
      }
--    const baseAxis = this.upAxis.replace("-", "");
--    const isNegative = this.upAxis.startsWith("-");
--    let hSign = baseAxis === "z" ? 1 : -1;
--    if (baseAxis === "y" && isNegative) hSign = 1;
+-    const baseAxis = this.upAxis.replace('-', '');
+-    const isNegative = this.upAxis.startsWith('-');
+-    let hSign = baseAxis === 'z' ? 1 : -1;
+-    if (baseAxis === 'y' && isNegative) hSign = 1;
 +    // Local patch: the horizontal drag direction used to depend on the up axis by accident (the model
 +    // followed the pointer for y, -y, x and -z, but ran against it for z and -x). The azimuth always
 +    // increases towards the screen's right for a positive up axis and towards its left for a negative one,
 +    // so dragging right must lower it for +x/+y/+z and raise it for -x/-y/-z.
-+    const hSign = this.upAxis.startsWith("-") ? 1 : -1;
++    const hSign = this.upAxis.startsWith('-') ? 1 : -1;
      this.rotationY += hSign * dx * 0.01;
      this.rotationX += dy * 0.01;
      this.rotationX = Math.max(-Math.PI / 2 + this.poleEpsilon, Math.min(Math.PI / 2 - this.poleEpsilon, this.rotationX));
+diff --git a/test/camera-free-rotation.test.ts b/test/camera-free-rotation.test.ts
+index f1e6819..def1360 100644
+--- a/test/camera-free-rotation.test.ts
++++ b/test/camera-free-rotation.test.ts
+@@ -51,4 +51,16 @@ describe('Camera free rotation', () => {
+     expect(Math.abs(c.position[1]!)).toBeLessThan(1e-4);
+     expect(Math.abs(c.position[2]!)).toBeLessThan(1e-4);
+   });
++
++  it('turntable: dragging right lowers the azimuth for +axes and raises it for -axes', () => {
++    for (const axis of ['x', 'y', 'z', '-x', '-y', '-z'] as const) {
++      const c = new Camera(canvas);
++      c.setUpAxis(axis);
++      c.setFreeRotation(false);
++      const before = c.getOrbitState()[1];
++      orbit(c, 10, 0);
++      const delta = c.getOrbitState()[1] - before;
++      expect(Math.sign(delta), axis).toBe(axis.startsWith('-') ? 1 : -1);
++    }
++  });
+ });

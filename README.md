@@ -32,13 +32,38 @@ export VG_SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
 export VG_ADMIN_PASSWORD='pick-a-password'  # only used to create the first admin
 uvicorn app.main:app --reload --port 8000
 ```
-Then open `http://localhost:8000`, sign in as `admin` with the password you set.
+The frontend is bundled with webpack, and the backend serves the result (`frontend/dist`), so build it once first
+(Node 20+; `KILN_RENDER_LIB` is the patched `kiln-render.js` that the Docker build makes in its `kiln` stage, with the
+`blosc-*.js`/`lz4-*.js`/`zstd-*.js` files next to it):
+```bash
+cd frontend
+npm ci
+KILN_RENDER_LIB=/path/to/kiln-render/lib/kiln-render.js npm run build   # or `npm run watch` while editing
+```
+Then open `http://localhost:8000`, sign in as `admin` with the password you set. (The Potree and 3DHOP viewers load their
+libraries from `frontend/dist/vendor`, which only the Docker image fills: the point cloud and mesh viewers need it.)
 
 ## Documentation
 
 Detailed documentation has been split into the following guides:
 
 *   **[Usage & UI Guide](docs/usage_ui_guide.md)**: Uploading volumes, UI features (bookmarks, animations, slice sweeps), branding, and histograms.
+*   **[Configuration](docs/configuration.md)**: Every setting of `.env` / `docker-compose.yml` in one table, with defaults.
 *   **[Deployment Guide](docs/deployment_guide.md)**: TrueNAS SCALE deployment, HTTPS/TLS requirements, Docker Hub publishing, and backups.
 *   **[Architecture & Internals](docs/architecture_internals.md)**: Backend/frontend design, job queues (Redis), background processing, and permissions.
 *   **[Kiln Volume Format](docs/kiln_volume_format.md)**: Deep dive into the sharded volume format specification.
+## License
+
+Copyright (C) 2026 ITAM CAS CZ, Antonín Zajíček <zajicek@itam.cas.cz>
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version. It is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the [LICENSE](LICENSE) file for details.
+
+Third-party components keep their own licenses: kiln-render (Apache-2.0), Nexus and VCGlib (GPL-3.0).
+
+## Contact
+
+Questions, bug reports and licensing enquiries: zajicek@itam.cas.cz or GitHub issues in this repository
