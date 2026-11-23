@@ -89,7 +89,7 @@ RUN sed -i 's/\r$//' /tmp/kiln-patches/*.patch \
 # name, so browsers never hold a stale copy and the pages need no ?v=... cache busting. The patched kiln-render
 # from the `kiln` stage is bundled into the volume page; it is copied with the chunks it loads on demand
 # (the Zarr codecs: blosc, lz4, zstd), which webpack splits into files of their own.
-FROM node:22-slim AS frontend
+FROM node:26-slim AS frontend
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
