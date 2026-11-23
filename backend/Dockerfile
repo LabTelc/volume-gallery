@@ -1,4 +1,4 @@
-FROM python:3.12-slim AS builder
+FROM python:3.15-slim AS builder
 
 # Install build dependencies (PotreeConverter requires TBB)
 RUN apt-get update && apt-get install -y \
@@ -97,7 +97,7 @@ COPY frontend ./
 COPY --from=kiln /kiln/lib/*.js ./vendor/kiln-render/lib/
 RUN npm run build
 
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
