@@ -1,4 +1,4 @@
-// Thin fetch wrapper around the backend API. Keeps the JWT in localStorage —
+// Thin fetch wrapper around the backend API. Keeps the JWT in sessionStorage —
 // fine for a small internal-network appliance; put this behind HTTPS in prod.
 
 const TOKEN_KEY = "vg_token";
@@ -24,7 +24,7 @@ const RAIL_COLLAPSED_KEY = "vg_rail_collapsed";
 })();
 
 export function isGuestShareSession() {
-    return Boolean(sessionStorage.getItem(SHARE_TOKEN_KEY)) && !localStorage.getItem(TOKEN_KEY);
+    return Boolean(sessionStorage.getItem(SHARE_TOKEN_KEY)) && !sessionStorage.getItem(TOKEN_KEY);
 }
 
 export function getShareToken() {
@@ -42,28 +42,28 @@ export function getToken() {
     if (window.location.pathname.startsWith("/viewers/") && sessionStorage.getItem(SHARE_TOKEN_KEY)) {
         return sessionStorage.getItem(SHARE_TOKEN_KEY);
     }
-    return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(SHARE_TOKEN_KEY);
+    return sessionStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(SHARE_TOKEN_KEY);
 }
 
 export function getRole() {
-    return localStorage.getItem(ROLE_KEY) || (sessionStorage.getItem(SHARE_TOKEN_KEY) ? "guest" : null);
+    return sessionStorage.getItem(ROLE_KEY) || (sessionStorage.getItem(SHARE_TOKEN_KEY) ? "guest" : null);
 }
 
 export function getUsername() {
-    return localStorage.getItem(USER_KEY) || (sessionStorage.getItem(SHARE_CODE_KEY) ? `shared:${sessionStorage.getItem(SHARE_CODE_KEY)}` : "guest");
+    return sessionStorage.getItem(USER_KEY) || (sessionStorage.getItem(SHARE_CODE_KEY) ? `shared:${sessionStorage.getItem(SHARE_CODE_KEY)}` : "guest");
 }
 
 export function setSession(token, role, username) {
-    localStorage.setItem(TOKEN_KEY, token);
-    localStorage.setItem(ROLE_KEY, role);
-    localStorage.setItem(USER_KEY, username);
+    sessionStorage.setItem(TOKEN_KEY, token);
+    sessionStorage.setItem(ROLE_KEY, role);
+    sessionStorage.setItem(USER_KEY, username);
 }
 
 
 export function clearSession() {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(ROLE_KEY);
-    localStorage.removeItem(USER_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(ROLE_KEY);
+    sessionStorage.removeItem(USER_KEY);
     clearShareSession();
     // The volume bricks the service worker (js/sw.js) cached belong to whoever was signed in.
     try { navigator.serviceWorker?.controller?.postMessage({ type: "CLEAR_BRICK_CACHE" }); } catch (_) { /* no worker */ }
@@ -89,7 +89,7 @@ const NAV_ICONS = {
 let brandingPromise = null;
 
 // Resolves with the branding (never rejects: falls back to the defaults). Cached per page.
-// The last branding the server sent is kept in localStorage, so the next page load can draw the
+// The last branding the server sent is kept in sessionStorage, so the next page load can draw the
 // right name and logo straight away instead of the defaults followed by a visible swap.
 const BRANDING_CACHE_KEY = "vg_branding";
 
@@ -100,7 +100,7 @@ function normalizeBranding(b) {
 // Synchronous: the cached branding, or null on the very first visit (or if storage is unavailable).
 export function getCachedBranding() {
     try {
-        const raw = localStorage.getItem(BRANDING_CACHE_KEY);
+        const raw = sessionStorage.getItem(BRANDING_CACHE_KEY);
         return raw ? normalizeBranding(JSON.parse(raw)) : null;
     } catch (_) {
         return null;
@@ -114,7 +114,7 @@ export function getBranding() {
             .catch(() => null)
             .then((b) => {
                 if (b) {
-                    try { localStorage.setItem(BRANDING_CACHE_KEY, JSON.stringify(b)); } catch (_) { /* full or blocked */ }
+                    try { sessionStorage.setItem(BRANDING_CACHE_KEY, JSON.stringify(b)); } catch (_) { /* full or blocked */ }
                     return normalizeBranding(b);
                 }
                 return getCachedBranding() || normalizeBranding({}); // server unreachable: keep what we had
@@ -777,16 +777,16 @@ async function publicPost(path, body) {
 const THEME_KEY = "vg_theme";
 
 export function getThemePref() {
-    const v = localStorage.getItem(THEME_KEY);
+    const v = sessionStorage.getItem(THEME_KEY);
     return v === "light" || v === "dark" ? v : "system";
 }
 
 export function setThemePref(pref) {
     if (pref === "light" || pref === "dark") {
-        localStorage.setItem(THEME_KEY, pref);
+        sessionStorage.setItem(THEME_KEY, pref);
         document.documentElement.dataset.theme = pref;
     } else {
-        localStorage.removeItem(THEME_KEY);
+        sessionStorage.removeItem(THEME_KEY);
         delete document.documentElement.dataset.theme;
     }
 }
@@ -854,7 +854,7 @@ export function renderShell(activePage, role, username) {
         </a>`
             )
             .join("");
-        const isCollapsed = localStorage.getItem(RAIL_COLLAPSED_KEY) === "1";
+        const isCollapsed = sessionStorage.getItem(RAIL_COLLAPSED_KEY) === "1";
 
   return `
     <div class="rail${isCollapsed ? " collapsed" : ""}">
@@ -939,7 +939,7 @@ export function wireLogout() {
   if (rail && collapseBtn) {
     collapseBtn.addEventListener("click", () => {
       const collapsed = rail.classList.toggle("collapsed");
-      localStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? "1" : "0");
+      sessionStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? "1" : "0");
       collapseBtn.title = collapsed ? "Expand sidebar" : "Minimize sidebar";
       // Notify 3D viewers (kiln-render, 3DHOP, Potree) after the width transition
       setTimeout(() => window.dispatchEvent(new Event("resize")), 220);
@@ -952,4 +952,4 @@ export function wireLogout() {
       window.location.href = "/login.html";
     });
   }
-}
+}
