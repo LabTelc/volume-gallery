@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import bcrypt
-from jose import jwt, JWTError
+import jwt
+from jwt.exceptions import InvalidTokenError
 
 from .config import settings
 
@@ -145,5 +146,5 @@ def create_file_token(subject: str, asset_id: int, kind: str, min_lod: Optional[
 def decode_token(token: str) -> Optional[dict]:
     try:
         return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-    except JWTError:
+    except InvalidTokenError:
         return None

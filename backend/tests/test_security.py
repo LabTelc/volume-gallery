@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import bcrypt
 import pytest
 from argon2 import PasswordHasher
-from jose import jwt
+import jwt
 
 from app import security
 from app.config import settings

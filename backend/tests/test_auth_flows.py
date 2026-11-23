@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import bcrypt
 import pytest
-from jose import jwt
+import jwt
 from sqlmodel import select
 
 from app.config import settings
