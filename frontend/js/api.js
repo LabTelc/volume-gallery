@@ -91,9 +91,9 @@ export function setSession(token, role, username) {
         sessionStorage.setItem(TOKEN_KEY, token);
         sessionStorage.removeItem(SHARE_TOKEN_KEY); // a real sign-in replaces any guest share session
     } catch (_) { /* storage blocked: the token then only survives until the next page load */ }
-    // The role is read from the token's claims (getRole); the stored one is a fallback only.
-    if (role) { try { sessionStorage.setItem(ROLE_KEY, role); } catch (_) { /* ignore */ } }
-    // The username is not stored: getUsername() reads it from the token. Kept for API compatibility.
+    // Role and username are not stored: getRole() and getUsername() read them from the token's claims.
+    // The arguments are kept for API compatibility with existing callers.
+    void role;
     void username;
 }
 
