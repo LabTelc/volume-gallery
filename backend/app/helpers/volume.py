@@ -40,7 +40,7 @@ except ImportError:
     fast_zlib = zlib
 
 from ..config import settings
-from .slices import percentile_window, INDEX_DTYPE
+from .slices import INDEX_DTYPE
 
 META_NAME = "volume.json"
 TIFF_IMPORT_DIR = "_tiff_import"  # temporary folder (inside the scratch folder) for extracted TIFFs
@@ -318,6 +318,52 @@ def _compress_brick_zflush(
     return bx, by, bz, compressed_bytes, z_offsets, b_min, b_max, b_avg
 
 
+def estimate_optimal_view_parameters(
+    hist: np.ndarray,
+    ramp_fraction: float = 0.5,
+) -> tuple[float, float, float]:
+    """
+    Compute (iso_value, ramp_start, ramp_end) directly from a 1D uint16 histogram.
+
+    Parameters:
+        hist: 1D array of bin counts (e.g., length 65536 from np.bincount).
+        ramp_fraction: Ramp width factor in (0, 1] relative to class means [mu1, mu2].
+
+    Returns:
+        (iso_value, ramp_start, ramp_end) as floats.
+    """
+    h = np.array(hist, dtype=np.float64, copy=True)
+
+    total = h.sum()
+    if total == 0:
+        return 0.0, 0.0, 0.0
+
+    bins = np.arange(h.size, dtype=np.float64)
+    w1 = np.cumsum(h[:-1])
+    w2 = total - w1
+
+    valid = (w1 > 0) & (w2 > 0)
+    if not np.any(valid):
+        val = float(np.flatnonzero(h)[0])
+        return val, val, val
+
+    cumsum_i = np.cumsum(h * bins)
+    mu1 = cumsum_i[:-1][valid] / w1[valid]
+    mu2 = (cumsum_i[-1] - cumsum_i[:-1][valid]) / w2[valid]
+
+    var_between = w1[valid] * w2[valid] * (mu1 - mu2) ** 2
+    best_pos = int(np.argmax(var_between))
+
+    iso_value = float(np.flatnonzero(valid)[best_pos])
+    bg_mean = float(mu1[best_pos])
+    fg_mean = float(mu2[best_pos])
+
+    ramp_start = iso_value - ramp_fraction * (iso_value - bg_mean)
+    ramp_end = iso_value + ramp_fraction * (fg_mean - iso_value)
+
+    return iso_value, ramp_start, ramp_end
+
+
 def decompose_tiff_stack(
         input_path: Path,
         output_dir: Path,
@@ -339,7 +385,7 @@ def decompose_tiff_stack(
 
     vol, dimensions, dtype = load_tiff_as_dask(input_path, brick_size)
     log("Computing histogram...")
-    compute_histogram(vol, histogram_path(output_dir))
+    histogram = compute_histogram(vol, histogram_path(output_dir))["counts"]
     w, h, d = dimensions
 
     if dtype == np.uint8:
@@ -359,7 +405,6 @@ def decompose_tiff_stack(
     lod_levels_meta = []
     current_vol = vol
     tmp_path = None
-    suggested_window = None
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for lod in range(max_lod + 1):
@@ -422,7 +467,6 @@ def decompose_tiff_stack(
 
             offset = 0
             processed = 0
-            mid_z = cd // 2
             compress_fn = _compress_brick_tiled66 if use_tiled66 else _compress_brick_zflush
 
             with open(bin_path, "wb") as bf:
@@ -442,19 +486,6 @@ def decompose_tiff_stack(
                         da.store(current_vol[src0:src1], target, lock=False)
                     else:
                         target[...] = current_vol[src0:src1]
-
-                    # Precompute middle-plane window on LOD 0 while already in RAM
-                    if lod == 0 and suggested_window is None and src0 <= mid_z < src1:
-                        mid_plane = slab[dst0 + (mid_z - src0), 1: 1 + ch, 1: 1 + cw]
-                        try:
-                            suggested_window = {**percentile_window(mid_plane), "source": "auto"}
-                        except NameError:
-                            lo, hi = np.percentile(mid_plane, [0.5, 99.5])
-                            suggested_window = {
-                                "center": float((lo + hi) * 0.5),
-                                "width": float(max(hi - lo, 1e-3)),
-                                "source": "auto",
-                            }
 
                     # ---- edge-clamp borders ----
                     if dst0 > 0:
@@ -556,6 +587,8 @@ def decompose_tiff_stack(
         except OSError:
             pass
 
+    iso_value, ramp_start, ramp_end = estimate_optimal_view_parameters(histogram)
+
     volume_json = {
         "name": os.path.basename(os.path.abspath(output_dir)),
         "originalDimensions": [w, h, d],
@@ -567,8 +600,9 @@ def decompose_tiff_stack(
         "format": output_format,
         "packed": True,
         "compressed": True,
-        "suggestedWindow": suggested_window,
         "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "isoValue": iso_value/HISTOGRAM_BINS,
+        "ramp": [ramp_start/HISTOGRAM_BINS, ramp_end/HISTOGRAM_BINS],
     }
 
     volume_json_path = os.path.join(output_dir, "volume.json")

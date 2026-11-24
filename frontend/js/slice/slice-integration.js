@@ -23,6 +23,7 @@ export function setupSliceIntegration({ grid, seg, getAccessUrl, params, onError
   let unmountControls = null;
   let unmountMeasure = null;
   const measuringListeners = new Set(); // called with the ruler's state; they survive the slice views being created later
+  const layoutListeners = new Set();    // called with the layout name; the same
   let unsubMeasuring = null;
   let unmountDebug = null;
   let controlsHost = null;
@@ -39,7 +40,8 @@ export function setupSliceIntegration({ grid, seg, getAccessUrl, params, onError
     creating ??= SliceViews.create({ grid, getAccessUrl, params, fetchFn })
       .then((v) => {
         views = v;
-        v.state.on("layout", ({ layout }) => highlight(layout));
+        if (histogram) v.state.setDataRange(histogram.min, histogram.max);
+        v.state.on("layout", ({ layout }) => { highlight(layout); layoutListeners.forEach((fn) => fn(layout)); });
         unsubMeasuring = v.state.on("measuring", ({ on }) => measuringListeners.forEach((fn) => fn(on)));
         if (viewer) v.attachViewer(viewer);
         if (controlsHost) {
@@ -100,6 +102,15 @@ export function setupSliceIntegration({ grid, seg, getAccessUrl, params, onError
 
   for (const b of buttons) b.addEventListener("click", () => requestLayout(b.dataset.layout));
 
+  /** Double-click on a view: it fills the whole area, or (when it already does) the quad layout comes back. */
+  const toggleMaximize3d = () => requestLayout((views?.state.layout ?? "3d") === "3d" ? "quad" : "3d");
+  const pane3d = grid.querySelector("#pane-3d");
+  let dblClickBlocked = () => false; // the page can veto it (the crop editor uses the left button in the 3D view)
+  pane3d?.addEventListener("dblclick", (e) => {
+    if (e.target.closest("button, input, select, a, label") || views?.state.measuring || dblClickBlocked()) return;
+    toggleMaximize3d();
+  });
+
   return {
     requestLayout,
     /** Call when the page loads: opens the layout named in the URL, if any. */
@@ -112,8 +123,13 @@ export function setupSliceIntegration({ grid, seg, getAccessUrl, params, onError
     /** fn(on) whenever the ruler is switched on or off; returns an unsubscribe function. */
     onMeasuring(fn) { measuringListeners.add(fn); return () => measuringListeners.delete(fn); },
     get measuring() { return !!views?.state.measuring; },
+    /** fn(layout) whenever the layout changes ("3d", "quad", "xy", "xz", "yz"); returns an unsubscribe function. */
+    onLayout(fn) { layoutListeners.add(fn); return () => layoutListeners.delete(fn); },
+    get layout() { return views?.state.layout ?? "3d"; },
+    /** Lets the page stop a double-click in the 3D view from maximizing it: fn() -> true to ignore it. */
+    setDblClickGuard(fn) { dblClickBlocked = fn ?? (() => false); },
     /** The volume's intensity histogram as the server stores it ({counts, min, max}); null if it has none. */
-    setHistogram(h) { histogram = h ?? null; },
+    setHistogram(h) { histogram = h ?? null; if (histogram) views?.state.setDataRange(histogram.min, histogram.max); },
     attachViewer(v) { viewer = v; views?.attachViewer(v); },
     detachViewer() { viewer = null; views?.detachViewer(); },
     /** (Re)builds the panel section; call after every control panel build. */

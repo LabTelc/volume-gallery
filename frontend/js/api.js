@@ -666,6 +666,18 @@ export const api = {
     sliceAccessUrl(id) {
         return request(`/api/volumes/${id}/slice-access-url`);
     },
+    // What the viewer starts with (isoValue, ramp: fractions of the histogram's range) and the volume's shape,
+    // from the slice endpoint; null when it cannot be had (the viewer then keeps its own defaults).
+    async sliceInfo(id) {
+        try {
+            const { url } = await api.sliceAccessUrl(id);
+            const res = await fetch(`${url}info`);
+            return res.ok ? await res.json() : null;
+        } catch (err) {
+            console.debug("No slice info for this volume:", err.message);
+            return null;
+        }
+    },
     meshAccessUrl(id) {
         return request(`/api/volumes/${id}/mesh-access-url`);
     },

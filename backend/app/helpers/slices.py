@@ -284,14 +284,10 @@ class VolumeSlicesKiln:
         # Persistent file descriptor (os.pread is thread-safe across _IO_POOL)
         self._fd = os.open(self.bin_file, os.O_RDONLY)
 
-        self._omero_window = None
-        self._window: Optional[dict] = vol_meta.get("suggestedWindow")
-        if self._window is None and (self.root / "suggested_window.json").exists():
-            try:
-                self._window = json.loads((self.root / "suggested_window.json").read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        self._window_lock = threading.Lock()
+        # Where the viewer starts: the isosurface level and the opacity ramp (start, end) of the transfer function,
+        # both as fractions (0..1) of the histogram's [min, max] range (volume.json, see decompose_tiff_stack)
+        self.iso_value: Optional[float] = _fraction(vol_meta.get("isoValue"))
+        self.ramp: Optional[List[float]] = _fraction_pair(vol_meta.get("ramp"))
 
         self.stamp = vol_json_path.stat().st_mtime_ns
 
@@ -354,21 +350,10 @@ class VolumeSlicesKiln:
             "sourceDtype": self.source_dtype,
             "channels": self.channels,
             "range": [lo, hi],
-            "window": self.suggested_window(),
+            "isoValue": self.iso_value,
+            "ramp": self.ramp,
             "blockSize": self.block_size,
         }
-
-    def suggested_window(self) -> dict:
-        """Robust percentiles of the middle xy plane."""
-        with self._window_lock:
-            if self._window is None:
-                if self._omero_window:
-                    start, end = self._omero_window
-                    self._window = {"center": (start + end) / 2, "width": end - start, "source": "omero"}
-                else:
-                    plane = self._read_direct("xy", self.dims["z"] // 2, 0)
-                    self._window = {**percentile_window(plane), "source": "auto"}
-            return self._window
 
     # --------------------------------------------------- tiled66 (LOD 0) helpers
 
@@ -1061,13 +1046,20 @@ class VolumeSlicesKiln:
         return out
 
 
-def percentile_window(plane: np.ndarray, lo: float = 1.0, hi: float = 99.0) -> dict:
-    sample = np.asarray(plane).ravel()
-    if sample.size > 400_000:
-        sample = sample[:: sample.size // 400_000 + 1]
-    a, b = np.percentile(sample.astype(np.float64), [lo, hi])
-    width = max(float(b - a), 1e-6)
-    return {"center": float(a) + width / 2, "width": width}
+def _fraction(value) -> Optional[float]:
+    """`value` as a float in 0..1, or None if it is missing or not such a number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if 0.0 <= value <= 1.0 else None
+
+
+def _fraction_pair(value) -> Optional[List[float]]:
+    """[start, end] with both in 0..1 and start <= end, or None."""
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    a, b = _fraction(value[0]), _fraction(value[1])
+    return [a, b] if a is not None and b is not None and a <= b else None
 
 
 # ------------------------------------------------------------------- the registry

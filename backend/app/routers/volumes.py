@@ -762,7 +762,7 @@ def slice_info(
     level: int = Query(0, ge=0, description="Resolution level (0 = finest, the default)"),
     session: Session = Depends(get_session),
 ):
-    """Dimensions, voxel spacing, data type and a suggested window for the slice views."""
+    """Dimensions, voxel spacing, data type and the viewer's starting isoValue and opacity ramp (fractions of the histogram range)."""
     vs = _slice_store(volume_id, token, level, session)
     return JSONResponse(vs.info(), headers={"Cache-Control": "private, max-age=60"})
 

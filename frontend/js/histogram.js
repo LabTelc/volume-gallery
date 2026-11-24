@@ -49,6 +49,39 @@ export function resampleHistogram(h, axisMin, axisMax, bins = BINS) {
   return out;
 }
 
+// Where the viewer starts, from the server's slice info ({ isoValue, ramp }: fractions of the histogram's
+// [min, max] range, see backend/app/helpers/volume.py) and the histogram (which says what that range is).
+// Returns { isoValue, tfPoints } on the transfer function's axis, as the viewer takes them (isoValue a fraction of
+// the axis, the points' x relative to the window); a part the server has no value for is left out.
+// `windowCenter` / `windowWidth`: the window the viewer starts with (its default is the whole axis).
+export function viewerDefaults(info, hist, { windowCenter = 0.5, windowWidth = 1 } = {}) {
+  const out = {};
+  if (!info || !hist || !(hist.max > hist.min)) return out;
+  const [lo, hi] = transferAxis(null, hist.dtype) ?? [hist.min, hist.max];
+  const clamp01 = (v) => Math.min(1, Math.max(0, v));
+  const onAxis = (f) => clamp01((hist.min + f * (hist.max - hist.min) - lo) / (hi - lo));
+  const isFrac = (v) => typeof v === "number" && v >= 0 && v <= 1;
+  const round = (v) => Math.round(v * 1e6) / 1e6;
+  const ww = Math.max(windowWidth, 1e-6);
+  const inWindow = (f) => clamp01((onAxis(f) - (windowCenter - ww / 2)) / ww); // the viewer's iso value and points are in windowed space
+  if (isFrac(info.isoValue)) out.isoValue = round(inWindow(info.isoValue));
+  const r = info.ramp;
+  if (Array.isArray(r) && r.length === 2 && isFrac(r[0]) && isFrac(r[1]) && r[0] <= r[1]) {
+    let start = inWindow(r[0]);
+    let end = inWindow(r[1]);
+    if (end - start < 1e-3) { // (a step, or a ramp outside the window) keep the points apart
+      end = Math.min(1, start + 1e-3);
+      start = Math.max(0, end - 1e-3);
+    }
+    // transparent below the ramp, opaque above it
+    out.tfPoints = [];
+    if (start > 0) out.tfPoints.push({ x: 0, y: 0 });
+    out.tfPoints.push({ x: round(start), y: 0 }, { x: round(end), y: 1 });
+    if (end < 1) out.tfPoints.push({ x: 1, y: 1 });
+  }
+  return out;
+}
+
 const appliedAxis = new WeakMap(); // viewer -> "lo:hi" of the histogram it currently shows
 
 // Gives the viewer's transfer function the histogram, resampled for its current axis.

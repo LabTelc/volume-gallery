@@ -70,7 +70,7 @@ export function mountMeasureControls(panelBody, { views, onEnable }) {
     <div class="ctl-collapsible-body">
       ${toggleRow("measure-on", "Ruler", !!st?.measuring, "Measure distances in the slice panes and the 3D view (M)")}
       <div class="measure-hint">${HINT}</div>
-      <label class="ctl-select-row" title="Where a click in the 3D view lands: on the surface of what is shown (approximate, accuracy shown) or on the three slice planes (exact)">
+      <label class="ctl-select-row" data-only3d title="Where a click in the 3D view lands: on the surface of what is shown (approximate, accuracy shown) or on the three slice planes (exact)">
         <span class="ctl-row-label ctl-select-label">3D points</span>
         <select class="ctl-select-input" data-role="pick3d">
           <option value="surface">On the volume (approximate)</option>

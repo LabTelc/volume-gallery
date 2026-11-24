@@ -241,6 +241,9 @@
   }
   .ctl-close:hover { color: var(--text); background: var(--viewer-hover); }
   .ctl-panel-body { padding: 0.85em; overflow-y: auto; flex: 1; min-height: 0; }
+  /* Only slices on screen: the 3D render controls are hidden, the slice views and the ruler stay */
+  .ctl-panel.slice-only .ctl-panel-body > :not([data-role="slice-section"]):not([data-role="measure-section"]) { display: none; }
+  .ctl-panel.slice-only [data-only3d] { display: none; }
   .ctl-panel-body::-webkit-scrollbar { width: 6px; }
   .ctl-panel-body::-webkit-scrollbar-track { background: transparent; }
   .ctl-panel-body::-webkit-scrollbar-thumb { background: var(--viewer-track); border-radius: 3px; }

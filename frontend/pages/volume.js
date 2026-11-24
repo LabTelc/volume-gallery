@@ -1,8 +1,9 @@
 // The page script of viewers/volume.html (it was an inline <script type="module"> there). Bundled by webpack.config.js.
     import { api, requireLogin, getRole, getUsername, renderShell, wireLogout, safeUrl } from "../js/api.js";
     import { backToFolderButton } from "../js/back-link.js";
-    import { syncHistogram } from "../js/histogram.js";
+    import { syncHistogram, transferAxis, viewerDefaults } from "../js/histogram.js";
 import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/slice/transfer-function.js";
+import { History, bindUndoKeys } from "../js/tf-history.js";
     import { KilnViewer } from "kiln-render";
     import {
       ATLAS_VRAM_OPTIONS_MB,
@@ -259,6 +260,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
     let currentViewer = null;
     let histogramPromise = null; // GET /api/volumes/{id}/histogram, started with the first load
     let histogramData = null; // its result; drawn behind the transfer function curve
+    let sliceInfoPromise = null; // GET .../slices/{token}/info, started with the first load: the starting isoValue and ramp
     // Extra URL parameters owned by the slice views (cursor, layout, window); set once they exist
     let sliceUrlParams = () => ({});
 
@@ -435,6 +437,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
 
         try {
           histogramPromise = histogramPromise || api.volumeHistogram(volumeId); // fetched once, in parallel
+          sliceInfoPromise = sliceInfoPromise || api.sliceInfo(volumeId);
           const access = await api.volumeDataAccessUrl(volumeId, minLevel);
           if (token !== loadToken) return;
           // The brick cache worker (js/sw.js). On the first visit this waits until it controls the page,
@@ -457,8 +460,17 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
           const atlas = await planAtlas(access.url, { vramMB: atlasVramMB });
           if (token !== loadToken) return;
           console.info(`[atlas] ${Math.round(atlas.budgetBytes / 1e6)} MB budget (${atlas.source})`);
+          // The first view starts from the server's isoValue (the isosurface level) and ramp (the opacity curve of the
+          // transfer function); a URL, a bookmark or the view before a reload has the last word.
+          const [startHistogram, startInfo] = await Promise.all([histogramPromise, sliceInfoPromise]);
+          if (token !== loadToken) return;
+          const startOptions = { ...nextOptions };
+          const defaults = viewerDefaults(startInfo, startHistogram, startOptions);
+          if (startOptions.isoValue === undefined && defaults.isoValue !== undefined) startOptions.isoValue = defaults.isoValue;
+          // (the seismic preset brings its own opacity curve)
+          if (startOptions.tfPoints === undefined && startOptions.tfPreset !== "seismic" && defaults.tfPoints) startOptions.tfPoints = defaults.tfPoints;
           const viewer = await KilnViewer.create(replaceCanvas(), access.url, {
-            ...nextOptions,
+            ...startOptions,
             atlasBudgetBytes: atlas.budgetBytes,
           });
           if (token !== loadToken) {
@@ -1036,6 +1048,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
         cylinder: { label: "Cylinder", sizes: [["Radius", 0, 1 / 100, 75], ["Length", 1, 1 / 200, 150]] },
         sphere: { label: "Sphere", sizes: [["Radius", 0, 1 / 100, 75]] },
       };
+      const CROP_DIMS = [dimX, dimY, dimZ]; // a shape's position is shown in voxels (it is stored as a fraction of the volume box)
       const CROP_DEFAULT_SIZE = { plane: [0, 0, 0], box: [0.25, 0.25, 0.25], cylinder: [0.25, 0.25, 0], sphere: [0.25, 0, 0] };
       const PLANE_AXIS_ROTATION = { X: [0, 90, 0], Y: [-90, 0, 0], Z: [0, 0, 0] }; // turns the plane's normal onto +X / +Y / +Z
       const existingCrop = canCrop ? renderer.getCropShapes() : [];
@@ -1073,7 +1086,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
               ${shape.type === "plane" ? `<div class="ctl-segmented" data-role="crop-axis-plane" title="Turn the plane so that it is perpendicular to an axis">
                 ${["X", "Y", "Z"].map((a) => `<button type="button" class="ctl-segment" data-axis="${a}">Normal ${a}</button>`).join("")}
               </div>` : ""}
-              ${["X", "Y", "Z"].map((a, i) => cropSliderHtml(`crop-${shape.type}-p${i}`, `Position ${a}`, 0, 100, shape.center[i] * 100)).join("")}
+              ${["X", "Y", "Z"].map((a, i) => cropSliderHtml(`crop-${shape.type}-p${i}`, `Position ${a}`, 0, CROP_DIMS[i], shape.center[i] * CROP_DIMS[i])).join("")}
               ${ui.sizes.map(([label, i, scale, max]) => cropSliderHtml(`crop-${shape.type}-s${i}`, label, 1, max, shape.size[i] / scale)).join("")}
               ${["X", "Y", "Z"].map((a, i) => cropSliderHtml(`crop-${shape.type}-r${i}`, `Rotate ${a}`, -180, 180, shape.rotation[i])).join("")}
             </div>
@@ -1254,6 +1267,12 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
       `;
       container.appendChild(panel);
 
+      // Only slices on screen (XY / XZ / YZ): the 3D render controls have nothing to act on, so they are hidden
+      // (the slice views and the ruler stay). See `.ctl-panel.slice-only` in the page's CSS.
+      const applySliceOnly = (layout) => panel.classList.toggle("slice-only", layout !== "3d" && layout !== "quad");
+      applySliceOnly(lodOptions.slices.layout);
+      const offLayout = lodOptions.slices.onLayout((layout) => { if (!panel.isConnected) offLayout(); else applySliceOnly(layout); });
+
       const panelBody = panel.querySelector(".ctl-panel-body");
       panelBody.scrollTop = uiState.panelScroll;
       panelBody.addEventListener("scroll", () => { uiState.panelScroll = panelBody.scrollTop; });
@@ -1315,6 +1334,41 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
       // The first and last point stay at x = 0 and x = 1 (kiln-render re-adds
       // them otherwise); only their opacity moves. ---
       let tfResizeObserver = null;
+
+      // --- undo / redo of the transfer function (colour map, colour stops, opacity curve, density).
+      // Every change below calls tfEdit(key) first, which remembers the state as it is; all the changes of one
+      // drag or slider move share a key, so they are one step. Ctrl+Z / Ctrl+Shift+Z work after a click in the editor. ---
+      const tfHist = new History();
+      let tfGesture = 0;
+      const tfNewGesture = () => `g${++tfGesture}`;
+      const tfSnapshot = () => ({
+        preset: tf.preset,
+        colors: tf.getColorStops?.()?.map((s) => ({ ...s })) ?? null, // (null while a built-in preset is selected)
+        opacity: tf.getOpacityPoints().map((p) => ({ x: p.x, y: p.y })),
+        density: renderer.densityScale,
+      });
+      const swapEl = () => panel.querySelector('[data-role="swap-region"]');
+      function syncTfUndo() {
+        const undoBtn = swapEl().querySelector('[data-role="tf-undo"]');
+        const redoBtn = swapEl().querySelector('[data-role="tf-redo"]');
+        if (undoBtn) undoBtn.disabled = !tfHist.canUndo;
+        if (redoBtn) redoBtn.disabled = !tfHist.canRedo;
+      }
+      function tfEdit(key = null) {
+        if (tfHist.checkpoint(tfSnapshot(), key)) syncTfUndo();
+      }
+      function tfRestore(snap) {
+        if (snap.colors && canCustomColours) tf.setColorStops(snap.colors.map((c) => ({ ...c })));
+        else tf.setPreset(snap.preset);
+        tf.setOpacityPoints(snap.opacity.map((p) => ({ ...p })));
+        renderer.densityScale = snap.density;
+        state.tfPreset = tf.preset;
+        dirty();
+        renderSwapRegion(); // the preset, sliders, curve and colour strip all follow
+      }
+      const tfUndo = () => { const snap = tfHist.undo(tfSnapshot()); if (snap) tfRestore(snap); };
+      const tfRedo = () => { const snap = tfHist.redo(tfSnapshot()); if (snap) tfRestore(snap); };
+
       function wireTfCanvas(root) {
         const canvas = root.querySelector(".ctl-tf-canvas");
         const overlay = root.querySelector(".ctl-tf-overlay");
@@ -1423,7 +1477,8 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
           return bestDist <= thresholdPx ? best : -1;
         }
 
-        function applyPoints(points) {
+        function applyPoints(points, key = null) {
+          tfEdit(key);
           tf.setOpacityPoints(points);
           dirty();
           redraw();
@@ -1432,6 +1487,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
         function endDrag() {
           if (drag === null) return;
           drag = null;
+          tfHist.endGesture();
           overlay.style.cursor = "crosshair";
           redraw();
         }
@@ -1442,7 +1498,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
           const pt = pointFromEvent(evt);
           const points = tf.getOpacityPoints();
           const ptIdx = nearestPointIndex(pt);
-          const press = { startX: evt.clientX, startY: evt.clientY, moved: false };
+          const press = { startX: evt.clientX, startY: evt.clientY, moved: false, key: tfNewGesture() };
           if (ptIdx >= 0) {
             drag = { type: "point", index: ptIdx, ...press };
           } else {
@@ -1488,7 +1544,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
               x = lo > hi ? (points[idx - 1].x + points[idx + 1].x) / 2 : Math.min(hi, Math.max(lo, x));
             }
             points[idx] = { x, y: pt.y };
-            applyPoints(points);
+            applyPoints(points, drag.key);
           } else if (drag.type === "line") {
             const idx = drag.index;
             if (idx < 0 || idx + 1 >= points.length) return;
@@ -1505,7 +1561,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
             const clampedDy = Math.min(maxDy, Math.max(minDy, dy));
             points[idx] = { x: startP0.x + clampedDx, y: startP0.y + clampedDy };
             points[idx + 1] = { x: startP1.x + clampedDx, y: startP1.y + clampedDy };
-            applyPoints(points);
+            applyPoints(points, drag.key);
           }
         });
         overlay.addEventListener("pointerleave", () => { if (!drag && hover !== -1) { hover = -1; redraw(); } });
@@ -1567,7 +1623,8 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
         const gradient = (stops) =>
           `linear-gradient(to right, ${stops.map((s) => `${s.color} ${(s.pos * 100).toFixed(2)}%`).join(", ")})`;
 
-        function commit(stops) {
+        function commit(stops, key = null) {
+          tfEdit(key);
           tf.setColorStops(stops);
           state.tfPreset = tf.preset;
           dirty();
@@ -1648,11 +1705,11 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
           selStop = Math.min(selStop, stops.length - 1);
           commit(stops);
         }
-        function moveStop(i, pos) {
+        function moveStop(i, pos, key = null) {
           const stops = tf.getColorStops();
           if (i <= 0 || i >= stops.length - 1) return;
           stops[i].pos = Math.min(stops[i + 1].pos - MIN_GAP, Math.max(stops[i - 1].pos + MIN_GAP, pos));
-          commit(stops);
+          commit(stops, key);
         }
 
         function wire() {
@@ -1662,23 +1719,24 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
             bar.focus();
             bar.setPointerCapture(evt.pointerId);
             const pos = posFromEvent(evt);
+            const key = tfNewGesture(); // adding a stop and dragging it afterwards is one step
             let idx = hitStop(pos);
             if (idx < 0) {
               const stops = insertStop(tf.getColorStops(), pos);
               idx = stops.reduce((best, s, i) => (Math.abs(s.pos - pos) < Math.abs(stops[best].pos - pos) ? i : best), 0);
               selStop = idx;
               lastAdd = performance.now();
-              commit(stops);
+              commit(stops, key);
             }
             selStop = idx;
             pressedStop = idx;
-            drag = { index: idx };
+            drag = { index: idx, key };
             paint();
           });
           bar.addEventListener("pointermove", (evt) => {
-            if (drag) moveStop(drag.index, posFromEvent(evt));
+            if (drag) moveStop(drag.index, posFromEvent(evt), drag.key);
           });
-          const endDrag = () => { drag = null; };
+          const endDrag = () => { drag = null; tfHist.endGesture(); };
           bar.addEventListener("pointerup", endDrag);
           bar.addEventListener("pointercancel", endDrag);
           bar.addEventListener("lostpointercapture", endDrag);
@@ -1694,14 +1752,18 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
             } else if (evt.key === "ArrowLeft" || evt.key === "ArrowRight") {
               evt.preventDefault();
               const step = (evt.shiftKey ? 0.05 : 0.01) * (evt.key === "ArrowLeft" ? -1 : 1);
-              moveStop(selStop, tf.getColorStops()[selStop].pos + step);
+              moveStop(selStop, tf.getColorStops()[selStop].pos + step, "arrow"); // (holding the key down is one step)
             }
           });
-          host.querySelector('[data-role="cs-color"]').addEventListener("input", (evt) => {
+          bar.addEventListener("keyup", () => tfHist.endGesture());
+          bar.addEventListener("blur", () => tfHist.endGesture());
+          const colorInput = host.querySelector('[data-role="cs-color"]');
+          colorInput.addEventListener("input", (evt) => { // (fires all the time while the picker is open: one step until it closes)
             const stops = tf.getColorStops();
             stops[selStop].color = evt.target.value;
-            commit(stops);
+            commit(stops, "color");
           });
+          colorInput.addEventListener("change", () => tfHist.endGesture());
           host.querySelector('[data-role="cs-pos"]').addEventListener("change", (evt) => {
             const v = Number(evt.target.value);
             if (Number.isFinite(v)) moveStop(selStop, v);
@@ -1722,6 +1784,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
       // Switches the colour map: a built-in preset, or "custom" (the last custom stops, else the
       // current colours as an editable starting point).
       function selectPreset(value) {
+        tfEdit();
         if (value === "custom") {
           const stops = tf.getColorStops() ?? lastCustomStops ?? currentColourStops();
           selStop = 0;
@@ -1745,6 +1808,15 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
         const swap = panel.querySelector('[data-role="swap-region"]');
         const showDensity = state.mode === "dvr";
         const showIso = state.mode === "iso";
+        // The iso value is an intensity of the data (the viewer keeps it as a fraction of the transfer function's
+        // intensity axis; while that axis is not known yet, the fraction itself is shown).
+        const isoAxis = transferAxis(viewer.metadata, histogramData?.dtype) ?? [0, 1];
+        const [isoLo, isoHi] = isoAxis;
+        const isoSpan = isoHi - isoLo;
+        const isoInteger = isoSpan >= 255 && Number.isInteger(isoLo) && Number.isInteger(isoHi) && isoSpan <= 65535;
+        const isoStep = isoInteger ? 1 : +(isoSpan / 1000).toPrecision(2);
+        const isoShown = (frac) => +(isoLo + Math.min(1, Math.max(0, frac)) * isoSpan).toPrecision(7);
+        const isoFrac = (v) => Math.min(1, Math.max(0, (v - isoLo) / isoSpan));
         swap.innerHTML = `
           <label class="ctl-select-row">
             <span class="ctl-row-label ctl-select-label">Preset</span>
@@ -1760,22 +1832,9 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
             <div class="ctl-tf-colors" data-role="tf-colors"></div>
           </div>
           <div class="ctl-tf-help">Drag points or lines &#x00b7; double-click to add or remove</div>
-          <div class="ctl-slider-row">
-            <span class="ctl-row-label ctl-slider-label">Center</span>
-            <div class="ctl-slider-track">
-              <div class="ctl-slider-fill" data-role="fill-center"></div>
-              <input type="range" class="ctl-slider-input" data-role="slider-center" min="0" max="1" step="0.01" value="${viewer.windowCenter}">
-            </div>
-            <span class="ctl-row-value ctl-mono" data-role="value-center">${viewer.windowCenter.toFixed(2)}</span>
-          </div>
-          <div class="ctl-slider-row">
-            <span class="ctl-row-label ctl-slider-label">Width</span>
-            <div class="ctl-slider-track">
-              <div class="ctl-slider-fill" data-role="fill-width"></div>
-              <input type="range" class="ctl-slider-input" data-role="slider-width" min="0.01" max="1" step="0.01" value="${viewer.windowWidth}">
-            </div>
-            <span class="ctl-row-value ctl-mono" data-role="value-width">${viewer.windowWidth.toFixed(2)}</span>
-          </div>
+          <div class="ctl-select-row" style="justify-content:flex-end;gap:6px">
+            <button type="button" class="ctl-mini-btn" data-role="tf-undo" title="Undo the last change to the transfer function (Ctrl+Z)">Undo</button>
+            <button type="button" class="ctl-mini-btn" data-role="tf-redo" title="Redo (Ctrl+Shift+Z)">Redo</button></div>
           ${showDensity ? `
           <div class="ctl-slider-row">
             <span class="ctl-row-label ctl-slider-label">Density</span>
@@ -1790,16 +1849,42 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
             <span class="ctl-row-label ctl-slider-label">Iso value</span>
             <div class="ctl-slider-track">
               <div class="ctl-slider-fill" data-role="fill-iso"></div>
-              <input type="range" class="ctl-slider-input" data-role="slider-iso" min="0" max="1" step="0.001" value="${viewer.isoValue}">
+              <input type="range" class="ctl-slider-input" data-role="slider-iso" min="${isoLo}" max="${isoHi}" step="${isoStep}" value="${isoShown(viewer.isoValue)}">
             </div>
-            <span class="ctl-row-value ctl-mono" data-role="value-iso">${viewer.isoValue.toFixed(3)}</span>
+            <input type="number" class="ctl-num" data-role="num-iso" min="${isoLo}" max="${isoHi}" step="${isoStep}" value="${isoShown(viewer.isoValue)}" aria-label="Iso value (an intensity of the data; type an exact value)" title="Intensity of the surface, in the units of the data: type an exact value">
           </div>` : ""}
         `;
 
-        wireSlider(swap, "center", (v) => { viewer.windowCenter = v; if (redrawTf) redrawTf(); }, (v) => v.toFixed(2));
-        wireSlider(swap, "width", (v) => { viewer.windowWidth = v; if (redrawTf) redrawTf(); }, (v) => v.toFixed(2));
-        if (showDensity) wireSlider(swap, "density", (v) => { renderer.densityScale = v; dirty(); }, (v) => v.toFixed(2));
-        if (showIso) wireSlider(swap, "iso", (v) => { viewer.isoValue = v; }, (v) => v.toFixed(3));
+        if (showDensity) wireSlider(swap, "density", (v) => { tfEdit("slider-density"); renderer.densityScale = v; dirty(); }, (v) => v.toFixed(2));
+        for (const role of ["density"]) { // released: the next move is a new step
+          swap.querySelector(`[data-role="slider-${role}"]`)?.addEventListener("change", () => tfHist.endGesture());
+        }
+        swap.querySelector('[data-role="tf-undo"]').addEventListener("click", tfUndo);
+        swap.querySelector('[data-role="tf-redo"]').addEventListener("click", tfRedo);
+        if (showIso) {
+          const slider = swap.querySelector('[data-role="slider-iso"]');
+          const field = swap.querySelector('[data-role="num-iso"]');
+          const fill = swap.querySelector('[data-role="fill-iso"]');
+          const paintIso = () => {
+            const f = isoFrac(parseFloat(slider.value));
+            fill.style.width = `calc(6px + (100% - 12px) * ${f || 0})`;
+          };
+          paintIso();
+          slider.addEventListener("input", () => {
+            const v = parseFloat(slider.value);
+            viewer.isoValue = isoFrac(v);
+            if (document.activeElement !== field) field.value = +v.toPrecision(7);
+            paintIso();
+          });
+          field.addEventListener("change", () => { // an exact value typed by the user (clamped to the data's range)
+            const v = parseFloat(field.value);
+            if (!Number.isFinite(v)) { field.value = isoShown(viewer.isoValue); return; }
+            const f = isoFrac(v);
+            viewer.isoValue = f;
+            slider.value = field.value = isoShown(f);
+            paintIso();
+          });
+        }
 
         swap.querySelector('[data-role="tf-preset"]').addEventListener("change", (evt) => {
           selectPreset(evt.target.value);
@@ -1807,8 +1892,10 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
 
         redrawTf = wireTfCanvas(swap);
         rebuildColorEditor = wireColorEditor(swap);
+        syncTfUndo();
       }
       renderSwapRegion();
+      bindUndoKeys(swapEl(), { undo: tfUndo, redo: tfRedo });
 
       // --- mode segmented control ---
       panel.querySelectorAll('[data-role="mode-segmented"] .ctl-segment').forEach((btn) => {
@@ -1868,7 +1955,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
         const syncSliders = (shape) => {
           const st = sliderSetters[shape.type];
           for (let i = 0; i < 3; i++) {
-            st.p[i](shape.center[i] * 100);
+            st.p[i](shape.center[i] * CROP_DIMS[i]);
             st.r[i](shape.rotation[i]);
           }
           for (const [i, set] of Object.entries(st.s)) set(shape.size[i] / CROP_UI[shape.type].sizes.find((q) => q[1] === +i)[2]);
@@ -1905,6 +1992,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
           onChange: (shape) => { syncSliders(shape); applyCrop(); },
           alive: () => panel.isConnected,
         });
+        slices.setDblClickGuard(() => panel.isConnected && editor.mode === "edit"); // (the left button belongs to the shape there)
         editor.on(() => {
           if (editor.mode === "edit" && slices.measuring) slices.toggleMeasure(); // the ruler and the shape editor both want the mouse
           syncEditUi();
@@ -1917,6 +2005,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
         mouseRoot.querySelectorAll('[data-role="crop-tool"] .ctl-segment').forEach((b) => b.addEventListener("click", () => editor.setTool(b.dataset.tool)));
         mouseRoot.querySelectorAll('[data-role="crop-pick"] .ctl-segment').forEach((b) => b.addEventListener("click", () => editor.select(b.dataset.pick)));
         const pct = (v) => `${Math.round(v)}%`;
+        const vox = (v) => String(Math.round(v)); // absolute position, in voxels
         const deg = (v) => `${Math.round(v)}\u00b0`;
         for (const shape of cropList) {
           const t = shape.type;
@@ -1933,7 +2022,7 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
           }));
           const setters = sliderSetters[t] = { p: [], r: [], s: {} };
           for (let i = 0; i < 3; i++) {
-            setters.p[i] = wireSlider(root, `crop-${t}-p${i}`, (v) => { shape.center[i] = v / 100; applyCrop(); }, pct);
+            setters.p[i] = wireSlider(root, `crop-${t}-p${i}`, (v) => { shape.center[i] = v / CROP_DIMS[i]; applyCrop(); }, vox);
             setters.r[i] = wireSlider(root, `crop-${t}-r${i}`, (v) => { shape.rotation[i] = v; applyCrop(); }, deg);
           }
           for (const [, i, scale] of CROP_UI[t].sizes) setters.s[i] = wireSlider(root, `crop-${t}-s${i}`, (v) => { shape.size[i] = v * scale; applyCrop(); }, pct);
@@ -1999,8 +2088,6 @@ import { insertStop, sampleStops, rgbToHex, decodeTf, encodeTf } from "../js/sli
             const label = panel.querySelector(`[data-role="value-${role}"]`);
             if (input && Number.isFinite(value)) { input.value = value; if (label) label.textContent = value.toFixed(2); }
           };
-          show("center", viewer.windowCenter);
-          show("width", viewer.windowWidth);
           show("density", renderer.densityScale);
           if (redrawTf) redrawTf();
           if (evt.detail?.settled && rebuildColorEditor) rebuildColorEditor(); // the colour editor follows once the animation is over

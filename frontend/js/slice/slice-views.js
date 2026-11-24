@@ -22,7 +22,7 @@ import { Measure3D } from "./measure-3d.js";
 import { ensureMeasureStyles } from "./measure-ui.js";
 import { niceScaleLength } from "../scalebar.js";
 import {
-  lineInBox, AXES, AXIS_INFO, AXIS_COLORS, absView, clamp, clipLineToPolygon, dragWindow, isAligned,
+  lineInBox, AXES, AXIS_INFO, AXIS_COLORS, absView, clamp, clipLineToPolygon, isAligned,
   paneScale, pixelToPlane, planeToPixel, textureFormatFor, zoomAt,
 } from "./geometry.js";
 
@@ -31,6 +31,7 @@ const UNIT_LABEL = { micrometer: "\u00b5m", millimeter: "mm", nanometer: "nm", c
 const HOLD_MS = 120;      // a new image replaces the one on screen when it is complete, or after this long (then it fills in)
 const GAP_PX = 12;        // the crosshair lines leave this much room around the cursor (a press there moves the cursor)
 const LINE_HIT_PX = 7;    // how close a press must be to a crosshair line to take it
+const CURSOR_HIT_PX = 14; // a press this close to the cursor takes it
 const ROT_SNAP = Math.PI / 12; // Shift while turning the lines: steps of 15 degrees
 const wrapPi = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const sameFrame = (a, b) => a.width === b.width && a.height === b.height && a.pixel === b.pixel
@@ -116,17 +117,14 @@ export class Pane {
         <span class="slice-sub"></span>
         <span class="slice-btns">
           <button type="button" data-act="measure" title="Measure distances (M): click two points" aria-pressed="false">\ud83d\udccf</button>
-          <button type="button" data-act="flip-u" title="Flip horizontally">\u21c6</button>
-          <button type="button" data-act="flip-v" title="Flip vertically">\u21c5</button>
-          <button type="button" data-act="reset" title="Reset zoom and pan (double-click)">\u21ba</button>
-          <button type="button" data-act="max" title="Maximize / restore">\u2922</button>
+          <button type="button" data-act="reset" title="Reset zoom and pan (R)">\u21ba</button>
+          <button type="button" data-act="max" title="Maximize / restore (double-click)">\u2922</button>
         </span>
       </div>
       <div class="slice-tools" role="group" aria-label="What one finger does">
-        <button type="button" data-tool="cursor" title="One finger: move the crosshair">\u2316</button>
+        <button type="button" data-tool="cursor" title="One finger: drag the crosshair (start on it)">\u2316</button>
         <button type="button" data-tool="pan" title="One finger: pan">\u2725</button>
         <button type="button" data-tool="scroll" title="One finger: scroll through the slices">\u2195</button>
-        <button type="button" data-tool="window" title="One finger: window / level">\u25d0</button>
         <button type="button" data-tool="measure" title="One finger: measure (tap two points, drag a point to move it)">\ud83d\udccf</button>
       </div>
       <div class="slice-hud"></div>
@@ -479,6 +477,19 @@ export class Pane {
     return best;
   }
 
+  /** The cursor in pane pixels. */
+  cursorPx() {
+    const st = this.state, cp = st.paneGeom(this.axis).project(st.pos);
+    return planeToPixel(cp.a, cp.b, this.size.width, this.size.height, this.absView(), this.ppv(), st.flips[this.axis]);
+  }
+
+  /** Where the pointer is relative to the cursor, if it is on it (within `radius` px): the cursor is only taken by
+   *  pressing on it, a press anywhere else does not move it. */
+  grabCursor(x, y, radius = CURSOR_HIT_PX) {
+    const c = this.cursorPx();
+    return Math.hypot(x - c.x, y - c.y) <= radius ? { x: c.x - x, y: c.y - y } : null;
+  }
+
   /** Angle of a pixel around the cursor in plane coordinates (from u towards v). */
   angleAt(x, y) {
     const g = this.state.paneGeom(this.axis), c = g.project(this.state.pos), q = this.planePoint(x, y);
@@ -526,14 +537,14 @@ export class Pane {
       }
       const { x, y } = this.local(e);
       const line = e.button === 0 && !e.shiftKey && !spaceDown ? this.lineAt(x, y) : null;
-      const mode = line ? "rotate" : e.button === 1 || (e.button === 0 && (e.shiftKey || spaceDown)) ? "pan" : e.button === 0 ? "cursor" : e.button === 2 ? "window" : null;
-      if (!mode) return;
+      const mode = line ? "rotate" : e.button === 1 || (e.button === 0 && (e.shiftKey || spaceDown)) ? "pan" : e.button === 0 ? "cursor" : null;
+      const off = mode === "cursor" ? this.grabCursor(x, y) : null; // (the cursor follows the pointer from where it was grabbed)
+      if (!mode || (mode === "cursor" && !off)) return;
       e.preventDefault();
       el.setPointerCapture(e.pointerId);
-      this.drag = { mode, id: e.pointerId, x, y, rot: mode === "rotate" ? this.startRotate(x, y) : null };
+      this.drag = { mode, id: e.pointerId, x, y, off, rot: mode === "rotate" ? this.startRotate(x, y) : null };
       if (mode === "rotate") this.el.style.cursor = "grabbing";
       st().beginInteraction();
-      if (mode === "cursor") this.moveCursorTo(x, y);
     });
 
     el.addEventListener("pointermove", (e) => {
@@ -552,15 +563,12 @@ export class Pane {
       const dx = x - this.drag.x, dy = y - this.drag.y;
       this.drag.x = x;
       this.drag.y = y;
-      const s = st();
       if (this.drag.mode === "cursor") {
-        this.moveCursorTo(x, y);
+        this.moveCursorTo(x + this.drag.off.x, y + this.drag.off.y);
       } else if (this.drag.mode === "rotate") {
         this.rotateTo(this.drag.rot, x, y, e.shiftKey);
       } else if (this.drag.mode === "pan") {
         this.panBy(dx, dy);
-      } else {
-        s.setWindow(dragWindow(s.window, dx, dy, s.dtype));
       }
     });
 
@@ -596,11 +604,10 @@ export class Pane {
       s.moveAlong(this.axis, dir * Math.abs(steps) * (e.shiftKey ? 10 : 1), this.axis);
     }, { passive: false });
 
+    // a double-click maximizes this pane, or puts the quad layout back (the ruler needs its quick clicks)
     el.addEventListener("dblclick", (e) => {
-      if (e.target.closest(".slice-head")) return;
-      const { x, y } = this.local(e);
-      if (this.lineAt(x, y)) st().resetOrientation(this.axis); // a double-click on a crosshair line levels the planes
-      else st().resetView(this.axis);
+      if (e.target.closest(".slice-head, .slice-tools") || st().measuring) return;
+      this.toggleMaximize();
     });
 
     el.addEventListener("keydown", (e) => {
@@ -615,7 +622,6 @@ export class Pane {
       else if (k === "ArrowRight") s.moveInPlane(this.axis, step, this.axis);
       else if (k === "Home" || k === "r") s.resetView(this.axis);
       else if (k === "i") s.setInvert(!s.invert);
-      else if (k === "w") s.resetWindow();
       else if (k === "m") s.setMeasuring(!s.measuring);
       else if (k === "Escape" && (s.pending || s.measuring)) { if (s.pending) s.setPending(null); else s.setMeasuring(false); this.rubber = null; }
       else if ((k === "Delete" || k === "Backspace") && s.measureSel !== null) s.removeMeasure(s.measureSel);
@@ -632,11 +638,15 @@ export class Pane {
     onButtonTap(el.querySelector(".slice-btns"), (btn) => {
       const act = btn.dataset.act;
       if (act === "reset") st().resetView(this.axis);
-      else if (act === "flip-u") st().toggleFlip(this.axis, "u");
-      else if (act === "flip-v") st().toggleFlip(this.axis, "v");
-      else if (act === "max") st().setLayout(st().layout === this.axis ? "quad" : this.axis);
+      else if (act === "max") this.toggleMaximize();
       else if (act === "measure") st().setMeasuring(!st().measuring);
     });
+  }
+
+  /** This pane fills the view, or (when it already does) the quad layout comes back. */
+  toggleMaximize() {
+    const st = this.state;
+    st.setLayout(st.layout === this.axis ? "quad" : this.axis);
   }
 
   // ------------------------------------------------------------ measuring
@@ -758,9 +768,9 @@ export class Pane {
       focus: () => this.el.focus({ preventScroll: true }),
       begin: () => { this.scrollAcc = 0; this.state.beginInteraction(); },
       end: () => { this.touchMeasureEnd(); this.trot = null; this.state.endInteraction(); },
-      tap: (x, y) => { if (this.views.touchTool === "measure") this.measureTap(x, y); else { this.moveCursorTo(x, y); this.hover(x, y); } },
+      tap: (x, y) => { if (this.views.touchTool === "measure") this.measureTap(x, y); else this.hover(x, y); }, // (a tap does not move the cursor)
       // two quick taps place two points with the ruler: they are not a double tap there
-      doubleTap: (x, y) => { if (this.views.touchTool === "measure") this.measureTap(x, y); else this.state.resetView(this.axis); },
+      doubleTap: (x, y) => { if (this.views.touchTool === "measure") this.measureTap(x, y); else this.toggleMaximize(); },
       drag: (tool, x, y, dx, dy) => this.touchDrag(tool, x, y, dx, dy),
       pinch: (g) => this.touchPinch(g),
     });
@@ -770,8 +780,6 @@ export class Pane {
     const s = this.state;
     if (tool === "pan") {
       this.panBy(dx, dy);
-    } else if (tool === "window") {
-      s.setWindow(dragWindow(s.window, dx, dy, s.dtype));
     } else if (tool === "measure") {
       this.touchMeasureDrag(x, y, dx, dy);
     } else if (tool === "scroll") {
@@ -786,10 +794,11 @@ export class Pane {
       // a finger that starts on a crosshair line turns the planes; anywhere else it moves the cursor
       if (!this.trot) {
         const line = s.showCrosshair ? this.lineAt(x - dx, y - dy, 16) : null;
-        this.trot = line ? this.startRotate(x - dx, y - dy) : { cursor: true };
+        const off = line ? null : this.grabCursor(x - dx, y - dy, 28); // (bigger than for a mouse: a finger)
+        this.trot = line ? this.startRotate(x - dx, y - dy) : off ? { cursor: true, off } : { none: true };
       }
-      if (this.trot.cursor) this.moveCursorTo(x, y);
-      else this.rotateTo(this.trot, x, y, false);
+      if (this.trot.cursor) this.moveCursorTo(x + this.trot.off.x, y + this.trot.off.y);
+      else if (!this.trot.none) this.rotateTo(this.trot, x, y, false);
     }
   }
 
@@ -857,7 +866,7 @@ export class SliceViews {
       if (!textureFormatFor(info.dtype)) throw new Error(`Slice views do not support ${info.dtype} data`);
       const device = await requestSliceDevice();
       if (!device) throw new Error("WebGPU is not available for the slice views");
-      const state = new SliceState({ dims: info.dims, spacing: info.spacing, dtype: info.dtype, window: info.window, channels: info.channels, unit: info.unit ?? null });
+      const state = new SliceState({ dims: info.dims, spacing: info.spacing, dtype: info.dtype, channels: info.channels, unit: info.unit ?? null });
       state.applyParams(params);
       return new SliceViews({ grid, client, info, device, state });
     } catch (err) {
@@ -877,7 +886,7 @@ export class SliceViews {
     this.touchTool = "cursor";
     try {
       const saved = localStorage.getItem("vg_slice_touch_tool");
-      if (["cursor", "pan", "scroll", "window", "measure"].includes(saved)) this.touchTool = saved;
+      if (["cursor", "pan", "scroll", "measure"].includes(saved)) this.touchTool = saved;
     } catch (_) { /* storage unavailable */ }
     this.renderer = new SliceRenderer(device);
     this.renderer.setLut(lutFor(state.tf));

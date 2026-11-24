@@ -1,7 +1,7 @@
 // Touch input for a slice pane, independent of the drawing code so that it can be tested on its own.
 //
 //   one finger   a tap moves the crosshair; a drag does what the chosen tool says (move the crosshair,
-//                pan, scroll through the slices, or window / level); a double tap resets the view
+//                pan, or scroll through the slices); a double tap maximizes the pane or restores the layout
 //   two fingers  pinch to zoom and drag to pan, at the same time, whatever the tool
 //
 // Mouse and pen input stay with the pane's own handlers: only pointerType "touch" is handled here.
@@ -15,7 +15,7 @@ const DOUBLE_PX = 32;    // ... and place make a double tap
  * @param {HTMLElement} el
  * @param {object} h  the pane's side of it:
  *   local(e) -> {x, y}   position inside the pane in CSS px
- *   tool() -> "cursor" | "pan" | "scroll" | "window"
+ *   tool() -> "cursor" | "pan" | "scroll" | "measure"
  *   focus(), begin(), end()    begin / end of a manipulation (previews are used in between)
  *   tap(x, y), doubleTap(x, y)
  *   drag(tool, x, y, dx, dy)   one finger moved (dx, dy since the last call)

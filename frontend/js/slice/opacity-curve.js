@@ -76,9 +76,14 @@ export function moveSegment(pts, idx, startP0, startP1, dx, dy) {
  * @param {(points: {x:number,y:number}[]) => void} o.setPoints
  * @param {(ctx: CanvasRenderingContext2D, w: number, h: number) => void} o.paint  draws the backdrop (CSS px, origin top-left)
  * @param {string} [o.color]  handle colour
+ * @param {(key: string|null) => void} [o.beforeChange]  called before every change; `key` is the same for all the
+ *   changes of one drag (null for a double-click): the hook for an undo history
+ * @param {() => void} [o.endGesture]  a drag is over
  * @returns {{ redraw: () => void, destroy: () => void }}
  */
-export function mountCurveEditor({ canvas, overlay, getPoints, setPoints, paint, color = "#e8a33d" }) {
+let gestureId = 0;
+
+export function mountCurveEditor({ canvas, overlay, getPoints, setPoints, paint, color = "#e8a33d", beforeChange, endGesture }) {
   let drag = null; // { type: "point" | "line", index, startX, startY (client px), moved, startPt?, startP0?, startP1? }
   let hover = -1;
 
@@ -130,11 +135,12 @@ export function mountCurveEditor({ canvas, overlay, getPoints, setPoints, paint,
     return { w: r.width, h: r.height, px, py, x: clamp01(px / r.width), y: clamp01(1 - py / r.height) };
   }
 
-  function apply(points) { setPoints(points); redraw(); }
+  function apply(points, key = null) { beforeChange?.(key); setPoints(points); redraw(); }
 
   function endDrag() {
     if (drag === null) return;
     drag = null;
+    endGesture?.();
     overlay.style.cursor = "crosshair";
     redraw();
   }
@@ -144,7 +150,7 @@ export function mountCurveEditor({ canvas, overlay, getPoints, setPoints, paint,
     evt.preventDefault();
     const at = locate(evt);
     const pts = getPoints();
-    const press = { startX: evt.clientX, startY: evt.clientY, moved: false };
+    const press = { startX: evt.clientX, startY: evt.clientY, moved: false, key: `curve${++gestureId}` };
     const pi = nearestPoint(pts, at.px, at.py, at.w, at.h);
     if (pi >= 0) drag = { type: "point", index: pi, ...press };
     else {
@@ -175,13 +181,13 @@ export function mountCurveEditor({ canvas, overlay, getPoints, setPoints, paint,
     if (drag.type === "point") {
       if (drag.index >= pts.length) return;
       pts[drag.index] = movePoint(pts, drag.index, at.x, at.y);
-      apply(pts);
+      apply(pts, drag.key);
     } else {
       if (drag.index + 1 >= pts.length) return;
       const [p0, p1] = moveSegment(pts, drag.index, drag.startP0, drag.startP1, at.x - drag.startPt.x, at.y - drag.startPt.y);
       pts[drag.index] = p0;
       pts[drag.index + 1] = p1;
-      apply(pts);
+      apply(pts, drag.key);
     }
   });
 

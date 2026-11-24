@@ -2,14 +2,15 @@
 // section and reuses the panel's own CSS classes. The panel is recreated on every viewer
 // reload, so this section keeps no state of its own: everything lives in SliceState.
 
-import { textureFormatFor } from "./geometry.js";
 import { ANGLE_LIMITS } from "./cursor.js";
 import { TF_LABELS, TF_PRESET_NAMES, insertStop } from "./transfer-function.js";
 import { mountCurveEditor } from "./opacity-curve.js";
 import { resampleHistogram } from "../histogram.js";
+import { History, bindUndoKeys } from "../tf-history.js";
 
-const toggle = (role, label, checked, title = "") => `
-  <label class="ctl-toggle-row" ${title ? `title="${title}"` : ""}>
+// only3d: the row is about the 3D view, so it is hidden while only slices are on screen
+const toggle = (role, label, checked, title = "", only3d = false) => `
+  <label class="ctl-toggle-row" ${title ? `title="${title}"` : ""}${only3d ? " data-only3d" : ""}>
     <span class="ctl-row-label ctl-toggle-label">${label}</span>
     <input type="checkbox" class="ctl-toggle-input" data-role="${role}" ${checked ? "checked" : ""}>
     <span class="ctl-toggle-track"></span>
@@ -33,17 +34,6 @@ const angleRow = (key, label, value, title) => {
     <input type="number" class="ctl-select-input slice-num slice-angle-num" data-role="angle-${key}" value="${value}" min="${-lim}" max="${lim}" step="1" aria-label="${title} (degrees)">
   </div>`;
 };
-
-// A window row like the 3D panel's Center / Width: a slider, plus a number field for typing an exact value.
-const windowRow = (key, label, value, min, max, step, title) => `
-  <div class="ctl-slider-row" title="${title}">
-    <span class="ctl-row-label ctl-slider-label">${label}</span>
-    <div class="ctl-slider-track">
-      <div class="ctl-slider-fill" data-role="fill-${key}"></div>
-      <input type="range" class="ctl-slider-input" data-role="slider-${key}" min="${min}" max="${max}" step="${step}" value="${value}">
-    </div>
-    <input type="number" class="ctl-num" data-role="${key}" value="${value}" min="${min}" max="${max}" step="${step}" aria-label="${title}">
-  </div>`;
 
 const numberRow = (role, label, value, min, max, step, title = "") => `
   <label class="ctl-select-row" ${title ? `title="${title}"` : ""}>
@@ -101,19 +91,10 @@ export function mountSlicePlaceholder(panelBody, onEnableCursor) {
  */
 export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
   const st = views.state;
-  const [lo, hi] = textureFormatFor(st.dtype)?.range ?? [0, 1];
-  const span = hi - lo;
-  const wStep = span > 1000 ? 1 : span / 1000;
-
   const section = newSection(panelBody);
   section.innerHTML = `
     <button type="button" class="ctl-collapsible-header"><span class="ctl-eyebrow">Slice views</span></button>
     <div class="ctl-collapsible-body">
-      ${windowRow("win-center", "Center", +st.window.center.toPrecision(7), lo, hi, wStep, "Grey level shown as the middle of the colour scale (right-drag in a slice pane)")}
-      ${windowRow("win-width", "Width", +st.window.width.toPrecision(7), wStep, span, wStep, "Range of values mapped across the colour scale")}
-      <div class="ctl-select-row" style="justify-content:flex-end">
-        <button type="button" class="ctl-mini-btn" data-role="win-reset">Reset window</button></div>
-
       <div class="ctl-eyebrow ctl-subhead">Transfer function</div>
       <label class="ctl-select-row" title="Colours applied to the windowed values of the slice views (independent of the 3D transfer function)">
         <span class="ctl-row-label ctl-select-label">Preset</span>
@@ -127,15 +108,18 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
         </div>
         <div class="ctl-tf-colors" data-role="tf-colors"></div>
       </div>
-      <div class="ctl-tf-axis" aria-hidden="true"><span data-role="axis-lo"></span><span>window</span><span data-role="axis-hi"></span></div>
+      <div class="ctl-tf-axis" aria-hidden="true"><span data-role="axis-lo"></span><span>intensity</span><span data-role="axis-hi"></span></div>
       <div class="ctl-tf-help">Opacity (line) over the data histogram &#x00b7; drag points or lines &#x00b7; double-click to add or remove</div>
+      <div class="ctl-select-row" style="justify-content:flex-end;gap:6px">
+        <button type="button" class="ctl-mini-btn" data-role="tf-undo" title="Undo the last change to the transfer function (Ctrl+Z)" disabled>Undo</button>
+        <button type="button" class="ctl-mini-btn" data-role="tf-redo" title="Redo (Ctrl+Shift+Z)" disabled>Redo</button></div>
       ${toggle("invert", "Invert", st.invert, "Reverse the colour scale")}
 
       <div class="ctl-eyebrow ctl-subhead">Cursor and planes</div>
       ${toggle("crosshair", "Crosshairs in slices", st.showCrosshair, "Show where the other two panes cut through each slice pane")}
       ${toggle("scalebar", "Scale bar in slices", st.showScaleBar !== false, "Length reference in each slice pane, assuming the voxel spacing in volume.json is in micrometres")}
-      ${toggle("cursor3d", "Cursor in 3D view", st.show3dCursor, "Show the cursor (three crossing lines and a dot) over the 3D view")}
-      ${toggle("planes3d", "Slice planes in 3D view", st.show3dPlanes, "Outline the three slice planes over the 3D view")}
+      ${toggle("cursor3d", "Cursor in 3D view", st.show3dCursor, "Show the cursor (three crossing lines and a dot) over the 3D view", true)}
+      ${toggle("planes3d", "Slice planes in 3D view", st.show3dPlanes, "Outline the three slice planes over the 3D view", true)}
       ${toggle("linkzoom", "Link zoom", st.linkZoom, "Zooming one slice pane zooms the others to match")}
       ${st.channels > 1 ? `<label class="ctl-select-row"><span class="ctl-row-label ctl-select-label">Channel</span>
         <select class="ctl-select-input" data-role="channel">${Array.from({ length: st.channels }, (_, i) =>
@@ -156,29 +140,6 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
     const v = parseFloat(e.target.value);
     if (Number.isFinite(v)) apply(v);
   });
-  // window: slider and number field edit the same value (see windowRefresh)
-  const windowSlider = (key, apply) => {
-    q(`slider-${key}`).addEventListener("input", (e) => apply(parseFloat(e.target.value)));
-    num(key, apply);
-  };
-  windowSlider("win-center", (v) => st.setWindow({ center: v, width: st.window.width }));
-  windowSlider("win-width", (v) => st.setWindow({ center: st.window.center, width: v }));
-  const paintFill = (key) => {
-    const input = q(`slider-${key}`);
-    const f = (parseFloat(input.value) - parseFloat(input.min)) / (parseFloat(input.max) - parseFloat(input.min));
-    q(`fill-${key}`).style.width = `calc(6px + (100% - 12px) * ${Math.min(1, Math.max(0, f)) || 0})`;
-  };
-  const windowRefresh = () => {
-    for (const [key, v] of [["win-center", st.window.center], ["win-width", st.window.width]]) {
-      const shown = +v.toPrecision(7);
-      q(`slider-${key}`).value = shown;
-      const field = q(key);
-      if (document.activeElement !== field) field.value = shown;
-      paintFill(key);
-    }
-  };
-  windowRefresh();
-  q("win-reset").addEventListener("click", () => st.resetWindow());
   q("invert").addEventListener("change", (e) => st.setInvert(e.target.checked));
   q("crosshair").addEventListener("change", (e) => st.setOption("showCrosshair", e.target.checked));
   q("scalebar").addEventListener("change", (e) => st.setOption("showScaleBar", e.target.checked));
@@ -208,6 +169,26 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
   let bar = null, drag = null, builtCustom = null;
   let lastAdd = -Infinity; // when a click last added a stop: its double-click must not delete it again
   let pressedStop = -1; // the stop the last press landed on (a double-click's own coordinates are rounded, so it is not hit-tested again)
+
+  // Undo / redo of every change made in this editor (colour map, stops, opacity curve). Each edit below calls
+  // `edit(key)` first: it remembers the transfer function as it is; a drag or a colour-picker session has one key,
+  // so it is one step.
+  const hist = new History();
+  let gesture = 0;
+  const edit = (key = null) => hist.checkpoint(st.tfSnapshot(), key);
+  const newGesture = () => `g${++gesture}`;
+  const undoBtn = q("tf-undo"), redoBtn = q("tf-redo");
+  const syncUndo = () => { undoBtn.disabled = !hist.canUndo; redoBtn.disabled = !hist.canRedo; };
+  const step = (take) => {
+    const snap = take(st.tfSnapshot());
+    if (!snap) return;
+    st.restoreTf(snap); // ("tf" fires: the strip, the preset, the curve and the pictures follow)
+  };
+  const undo = () => step((now) => hist.undo(now));
+  const redo = () => step((now) => hist.redo(now));
+  undoBtn.addEventListener("click", undo);
+  redoBtn.addEventListener("click", redo);
+  const unbindKeys = bindUndoKeys(section, { undo, redo });
 
 
   const isCustom = () => st.tf.preset === "custom";
@@ -267,6 +248,7 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
   // Switches the colour map: a built-in preset, or "custom" (the last custom stops, else the current colours
   // as an editable starting point).
   function selectPreset(value) {
+    edit();
     if (value === "custom") {
       selStop = 0;
       st.setTfStops(isCustom() ? stopsNow() : lastCustomStops ?? stopsNow());
@@ -295,12 +277,14 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
     if (i <= 0 || i >= stops.length - 1) return;
     stops.splice(i, 1);
     selStop = Math.min(selStop, stops.length - 1);
+    edit();
     st.setTfStops(stops);
   }
-  function moveStop(i, pos) {
+  function moveStop(i, pos, key = null) {
     const stops = stopsNow();
     if (i <= 0 || i >= stops.length - 1) return;
     stops[i].pos = Math.min(stops[i + 1].pos - MIN_GAP, Math.max(stops[i - 1].pos + MIN_GAP, pos));
+    edit(key);
     st.setTfStops(stops);
   }
 
@@ -311,6 +295,7 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
       bar.focus();
       bar.setPointerCapture(evt.pointerId);
       const pos = posFromEvent(evt);
+      const key = newGesture(); // adding a stop and dragging it afterwards is one step
       let idx = hitStop(pos);
       if (idx < 0) {
         const stops = insertStop(st.tf.stops, pos);
@@ -318,15 +303,16 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
         idx = stops.reduce((best, s, i) => (Math.abs(s.pos - pos) < Math.abs(stops[best].pos - pos) ? i : best), 0);
         selStop = idx;
         lastAdd = performance.now();
+        edit(key);
         st.setTfStops(stops);
       }
       selStop = idx;
       pressedStop = idx;
-      drag = { index: idx };
+      drag = { index: idx, key };
       paint();
     });
-    bar.addEventListener("pointermove", (evt) => { if (drag) moveStop(drag.index, posFromEvent(evt)); });
-    const endDrag = () => { drag = null; };
+    bar.addEventListener("pointermove", (evt) => { if (drag) moveStop(drag.index, posFromEvent(evt), drag.key); });
+    const endDrag = () => { drag = null; hist.endGesture(); };
     bar.addEventListener("pointerup", endDrag);
     bar.addEventListener("pointercancel", endDrag);
     bar.addEventListener("lostpointercapture", endDrag);
@@ -342,14 +328,19 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
       } else if (evt.key === "ArrowLeft" || evt.key === "ArrowRight") {
         evt.preventDefault();
         const step = (evt.shiftKey ? 0.05 : 0.01) * (evt.key === "ArrowLeft" ? -1 : 1);
-        moveStop(selStop, st.tf.stops[selStop].pos + step);
+        moveStop(selStop, st.tf.stops[selStop].pos + step, "arrow"); // (holding the key down is one step)
       }
     });
-    host.querySelector('[data-role="cs-color"]').addEventListener("input", (evt) => {
+    bar.addEventListener("keyup", () => hist.endGesture());
+    bar.addEventListener("blur", () => hist.endGesture());
+    const colorInput = host.querySelector('[data-role="cs-color"]');
+    colorInput.addEventListener("input", (evt) => { // (fires all the time while the picker is open: one step until it closes)
       const stops = stopsNow();
       stops[selStop].color = evt.target.value;
+      edit("color");
       st.setTfStops(stops);
     });
+    colorInput.addEventListener("change", () => hist.endGesture());
     host.querySelector('[data-role="cs-pos"]').addEventListener("change", (evt) => {
       const v = Number(evt.target.value);
       if (Number.isFinite(v)) moveStop(selStop, v);
@@ -359,6 +350,7 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
     host.querySelector('[data-role="cs-reverse"]').addEventListener("click", () => {
       const stops = stopsNow().map((s) => ({ ...s, pos: 1 - s.pos })).sort((a, b) => a.pos - b.pos);
       selStop = stops.length - 1 - selStop;
+      edit();
       st.setTfStops(stops);
     });
   }
@@ -429,6 +421,8 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
     overlay: q("tf-overlay"),
     getPoints: () => st.tf.alpha.map((p) => ({ ...p })),
     setPoints: (points) => st.setTfAlpha(points),
+    beforeChange: edit,
+    endGesture: () => hist.endGesture(),
     paint: paintCurve,
   });
   let curveFrame = 0;
@@ -440,6 +434,7 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
 
   // the preset, the strip and the handles follow the state (an edit, a preset pick, a shared link, an animation)
   function syncEditor() {
+    syncUndo();
     q("tf-preset").value = st.tf.preset;
     if (builtCustom !== isCustom()) build(); else paint();
   }
@@ -450,7 +445,6 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
   // keep the fields in sync with drags / scrolling elsewhere (never while the user types in one)
   const refresh = () => {
     const set = (role, v) => { const el = q(role); if (el && document.activeElement !== el) el.value = v; };
-    windowRefresh();
     for (const a of ["x", "y", "z"]) set(`cur-${a}`, st.cursor[a] + 1);
     q("invert").checked = st.invert;
     q("cursor3d").checked = st.show3dCursor;
@@ -464,6 +458,6 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
       q(`fill-${key}`).style.width = `${((e[key] + lim) / (2 * lim)) * 100}%`;
     }
   };
-  const offs = [st.on("window", refresh), st.on("cursor", refresh), st.on("option", refresh), st.on("angled", refresh), st.on("tf", () => { syncEditor(); scheduleCurve(); }), st.on("window", scheduleCurve)];
-  return () => { offs.forEach((off) => off()); cancelAnimationFrame(curveFrame); curve.destroy(); section.remove(); };
+  const offs = [st.on("window", refresh), st.on("cursor", refresh), st.on("option", refresh), st.on("orientation", refresh), st.on("tf", () => { syncEditor(); scheduleCurve(); }), st.on("window", scheduleCurve)];
+  return () => { offs.forEach((off) => off()); unbindKeys(); cancelAnimationFrame(curveFrame); curve.destroy(); section.remove(); };
 }

@@ -250,11 +250,6 @@ export class SliceState {
     this._emit("view", { axis });
   }
 
-  toggleFlip(axis, which) {
-    this.flips[axis][which] *= -1;
-    this._emit("view", { axis });
-  }
-
   // ------------------------------------------------------ window and the rest
 
   setWindow(win) {
@@ -262,6 +257,15 @@ export class SliceState {
     this._emit("window");
   }
   resetWindow() {
+    this.setWindow(this.defaultWindow);
+  }
+  /**
+   * The slice views no longer have a window to edit: the colour scale (and the transfer function editor) spans
+   * the data's whole range, so the whole histogram is visible there. Called with the histogram's [min, max].
+   */
+  setDataRange(min, max) {
+    if (!Number.isFinite(min) || !Number.isFinite(max) || !(max > min)) return;
+    this.defaultWindow = { center: (min + max) / 2, width: max - min };
     this.setWindow(this.defaultWindow);
   }
   setInvert(v) {
@@ -291,6 +295,21 @@ export class SliceState {
     if (!norm || norm.length < 2) return;
     this.tf = { ...this.tf, preset: "custom", stops: norm };
     this._emit("tf");
+  }
+
+  /** A copy of the transfer function (colours and opacity), for the editor's undo history. */
+  tfSnapshot() {
+    return { preset: this.tf.preset, stops: this.tf.stops.map((s) => ({ ...s })), alpha: this.tf.alpha.map((p) => ({ ...p })) };
+  }
+
+  /** Puts back a tfSnapshot() (the preset name is kept, so a built-in preset shows as one again). */
+  restoreTf(snap) {
+    const stops = normalizeStops(snap?.stops);
+    const alpha = normalizeAlpha(snap?.alpha);
+    if (!stops || stops.length < 2 || !alpha || alpha.length < 2) return false;
+    this.tf = { preset: typeof snap.preset === "string" ? snap.preset : "custom", stops, alpha };
+    this._emit("tf");
+    return true;
   }
 
   /** Replaces the opacity curve: points {x, y} over the windowed value, both 0..1 (see transfer-function.js). */
@@ -404,9 +423,6 @@ export class SliceState {
     const centred = ["x", "y", "z"].every((a) => Math.abs(this.pos[a] - this.cursor[a] - 0.5) < 1e-6);
     p.cursor = centred ? `${this.cursor.x},${this.cursor.y},${this.cursor.z}` : ["x", "y", "z"].map((a) => (+this.pos[a].toFixed(3)).toString()).join(","); // whole numbers: voxel indices
     if (this.layout !== "3d") p.layout = this.layout;
-    if (this.window.center !== this.defaultWindow.center || this.window.width !== this.defaultWindow.width) {
-      p.win = `${+this.window.center.toPrecision(7)},${+this.window.width.toPrecision(7)}`;
-    }
     if (this.channel) p.ch = String(this.channel);
     const e = this.euler();
     if (e.rx || e.ry || e.rz) p.ang = `${e.rx},${e.ry},${e.rz}`;
@@ -424,8 +440,7 @@ export class SliceState {
       const [x, y, z] = cur; // whole numbers are voxel indices, anything else continuous coordinates
       this.setPos({ x: Number.isInteger(x) ? x + 0.5 : x, y: Number.isInteger(y) ? y + 0.5 : y, z: Number.isInteger(z) ? z + 0.5 : z }, "url");
     }
-    const win = (get("win") ?? "").split(",").map(Number);
-    if (win.length === 2 && win.every(Number.isFinite) && win[1] > 0) this.setWindow({ center: win[0], width: win[1] });
+    // (an old link's "win" is ignored: the slice views always span the data's whole range)
     const ch = Number(get("ch"));
     if (Number.isFinite(ch) && get("ch") !== null) this.setChannel(ch);
     const ang = (get("ang") ?? "").split(",").map(Number); // (links of the old angled view carry a fourth number: ignored)
