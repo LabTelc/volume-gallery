@@ -8,7 +8,7 @@ python-multipart==0.0.33
 
 # --- TIFF-stack -> kiln sharded binary conversion ---
 tifffile==2026.11.16
-numpy==2.5.4
+numpy==2.5.5
 dask==2026.8.0
 # --- Slice views: zstd-compressed planes ---
 isal==1.9.1
