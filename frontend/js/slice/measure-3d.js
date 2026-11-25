@@ -11,7 +11,7 @@
 //  - "planes": on the three slice planes shown in the 3D view (exact; move them with the cursor).
 
 import { AXES } from "./geometry.js";
-import { hitHandle, loadCoarseVolume, pickPlanes, pickVolume, pixelRay, repositionAtDepth } from "./measure.js";
+import { hitHandle, loadCoarseVolume, loadCoarseVolumeFromPlanes, pickPlanes, pickVolume, pixelRay, repositionAtDepth } from "./measure.js";
 
 const show3d = (layout) => layout === "3d" || layout === "quad"; // as SliceViews.show3d (not imported: it imports this)
 const CLICK_PX = 5;      // a press that moves further is a drag (the camera's)
@@ -75,10 +75,17 @@ export class Measure3D {
     if (!provider?.getMetadata) { this._setStatus("3D picking needs the 3D view"); return null; }
     this._abort = new AbortController();
     this._setStatus("Preparing 3D picking\u2026");
-    this._loading = loadCoarseVolume(provider, {
-      signal: this._abort.signal,
-      onProgress: (d, t) => this._setStatus(`Preparing 3D picking\u2026 ${d} of ${t}`),
-    }).then((vol) => {
+    const signal = this._abort.signal;
+    const onProgress = (d, t) => this._setStatus(`Preparing 3D picking\u2026 ${d} of ${t}`);
+    const fromBricks = () => loadCoarseVolume(provider, { dtype: st.dtype, dataRange: this.viewer.metadata?.dataRange, signal, onProgress });
+    // The server's own samples first (the scale of the histogram and the slice views); kiln's bricks if that does not work
+    const meta = provider.getMetadata();
+    const baseUrl = this.views.client?.baseUrl;
+    const build = baseUrl
+      ? loadCoarseVolumeFromPlanes({ baseUrl, levels: meta.levels, fullDims: meta.dimensions, signal, onProgress })
+        .catch((err) => { if (err.cancelled) throw err; console.warn("[measure] the server's planes are not usable, using the 3D view's bricks:", err.message); return fromBricks(); })
+      : fromBricks();
+    this._loading = build.then((vol) => {
       this.coarse = vol;
       this.readyText = `3D picking ready (about \u00b1${+vol.accuracy.toPrecision(2)} voxels)`;
       this._setStatus(this.readyText);
@@ -101,7 +108,7 @@ export class Measure3D {
   }
 
   /** The 3D point under pixel (x, y): { point, acc } (acc: accuracy in voxels, 0 = exact), or null. */
-  pick(x, y) {
+  pick(x, y, trace = null) {
     const st = this.views.state;
     const v = this.viewer;
     const ray = v && this._ray(x, y);
@@ -119,7 +126,19 @@ export class Measure3D {
       tf: { windowCenter: v.windowCenter, windowWidth: v.windowWidth, points: v.transferFunction?.getOpacityPoints?.(), densityScale: r?.densityScale ?? 1 },
       clip: r?.clipMin ? { min: Array.from(r.clipMin), max: Array.from(r.clipMax) } : null,
       removed: typeof r?.isCropRemoved === "function" ? (p) => r.isCropRemoved(p) : null, // crop shapes (kiln-render patch 0007)
+      trace,
     });
+    if (trace) {
+      const d = this.coarse.data;
+      let min = Infinity, max = -Infinity, sum = 0, nonzero = 0;
+      for (let i = 0; i < d.length; i += 7) { const q = d[i]; if (q < min) min = q; if (q > max) max = q; sum += q; if (q > 0) nonzero++; }
+      Object.assign(trace, {
+        dtype: st.dtype, dataRange: v.metadata?.dataRange, mode: v.mode, isoValue: v.isoValue, window: [v.windowCenter, v.windowWidth], densityScale: r?.densityScale,
+        tfPoints: v.transferFunction?.getOpacityPoints?.(), clip: r?.clipMin ? [Array.from(r.clipMin), Array.from(r.clipMax)] : null,
+        size: Array.from(size), ray, coarse: { dims: this.coarse.dims, lod: this.coarse.lod, min, max, mean: sum / Math.ceil(d.length / 7), nonzeroFraction: nonzero / Math.ceil(d.length / 7) },
+        hit: hit && { point: hit.point, value: hit.value, t: hit.t },
+      });
+    }
     return hit ? { point: hit.point, acc: hit.accuracy } : null;
   }
 
@@ -204,7 +223,12 @@ export class Measure3D {
   /** A click at (x, y): the first point, or the second one that completes the measurement. */
   _place(x, y) {
     const st = this.views.state;
-    const hit = this.pick(x, y);
+    const trace = {};
+    const hit = this.pick(x, y, trace);
+    if (!hit && trace.insideAtCamera) {
+      this._setStatus("The view starts inside material (the iso value or opacity is below the data at the camera): raise the iso value / opacity ramp, or move the camera out of the volume");
+      return;
+    }
     if (!hit) {
       this._setStatus(this.coarse || st.measure3dMode === "planes" ? "Nothing there: click on the volume (or on a slice plane in Slice planes mode)" : this.status);
       return;

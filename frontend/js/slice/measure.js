@@ -277,6 +277,23 @@ export function halfToFloat(bits) {
   return halfCache[bits];
 }
 
+/**
+ * How a stored voxel becomes the density 0..1 the renderer works with, by the kind of brick it comes in:
+ *  - Uint8Array (r8unorm): /255;
+ *  - Uint16Array of 16-bit integer data (r16unorm): a fraction of 65535, NOT float16 bits;
+ *  - Uint16Array of float data (r16float: float16 bits) and Float32Array: the value, which the renderer scales to 0..1 over
+ *    the data range ((v - floatMin) / (floatMax - floatMin)), so this does too: `dataRange` is the viewer's metadata.dataRange.
+ * @param {ArrayBufferView} src  a brick's data
+ * @param {{dtype?: string, dataRange?: number[]}} [o]  the volume's data type (as in volume.json) and range
+ */
+export function brickDecoder(src, { dtype, dataRange } = {}) {
+  if (src instanceof Uint8Array) return (v) => v / 255;
+  if (src instanceof Uint16Array && dtype === "uint16") return (v) => v / 65535;
+  const lo = Number(dataRange?.[0]), hi = Number(dataRange?.[1]);
+  const scale = hi > lo ? (v) => clamp((v - lo) / (hi - lo), 0, 1) : (v) => v;
+  return src instanceof Uint16Array ? (v) => scale(halfToFloat(v)) : scale;
+}
+
 /** A coarse level of the volume in memory (values 0..1 as the renderer sees them), for placing 3D points. */
 export class CoarseVolume {
   /** @param {{dims: {x,y,z}, data: Float32Array, lod: number, factor: {x,y,z}}} o  factor: voxels of the finest level per voxel here */
@@ -318,9 +335,10 @@ export function chooseLevel(levels, maxVoxels) {
  * Builds a CoarseVolume from a kiln DataProvider: loads every brick of one coarse level (a few dozen bricks, about
  * as much data as a small image) and copies their cores into one array.
  * @param {object} provider  kiln's DataProvider (getMetadata, loadBrick)
- * @param {{maxVoxels?: number, signal?: AbortSignal, onProgress?: (done: number, total: number) => void, concurrency?: number}} [o]
+ * @param {{maxVoxels?: number, signal?: AbortSignal, onProgress?: (done: number, total: number) => void, concurrency?: number, dtype?: string, dataRange?: number[]}} [o]
+ *   dtype / dataRange: the volume's data type and, for float data, the range the viewer derived (see brickDecoder)
  */
-export async function loadCoarseVolume(provider, { maxVoxels = 8_000_000, signal, onProgress, concurrency = 4 } = {}) {
+export async function loadCoarseVolume(provider, { maxVoxels = 8_000_000, signal, onProgress, concurrency = 4, dtype, dataRange } = {}) {
   const meta = provider.getMetadata();
   const level = chooseLevel(meta.levels, maxVoxels);
   const [X, Y, Z] = level.dimensions;
@@ -330,6 +348,7 @@ export async function loadCoarseVolume(provider, { maxVoxels = 8_000_000, signal
   const jobs = [];
   for (let bz = 0; bz < grid[2]; bz++) for (let by = 0; by < grid[1]; by++) for (let bx = 0; bx < grid[0]; bx++) jobs.push([bx, by, bz]);
   let done = 0, next = 0;
+  const seen = { bricks: jobs.length, empty: 0, types: new Set(), lengths: new Set(), rawMin: Infinity, rawMax: -Infinity }; // (for the console)
   const worker = async () => {
     while (next < jobs.length) {
       if (signal?.aborted) throw Object.assign(new Error("Cancelled"), { cancelled: true });
@@ -337,21 +356,65 @@ export async function loadCoarseVolume(provider, { maxVoxels = 8_000_000, signal
       const res = await provider.loadBrick(level.lod, bx, by, bz, 0, signal);
       if (res?.data) {
         const src = res.data;
-        const half = src instanceof Uint16Array;
+        const toFloat = brickDecoder(src, { dtype, dataRange });
+        seen.types.add(src.constructor.name);
+        seen.lengths.add(src.length);
         const x0 = bx * B, y0 = by * B, z0 = bz * B;
         const nx = Math.min(B, X - x0), ny = Math.min(B, Y - y0), nz = Math.min(B, Z - z0);
         for (let z = 0; z < nz; z++) for (let y = 0; y < ny; y++) {
           let s = ((z + ghost) * P + (y + ghost)) * P + ghost;
           let d = ((z0 + z) * Y + (y0 + y)) * X + x0;
-          for (let x = 0; x < nx; x++, s++, d++) data[d] = half ? halfToFloat(src[s]) : src[s] / 255;
+          for (let x = 0; x < nx; x++, s++, d++) { const q = src[s]; data[d] = toFloat(q); if (q < seen.rawMin) seen.rawMin = q; if (q > seen.rawMax) seen.rawMax = q; }
         }
-      }
+      } else seen.empty++;
       onProgress?.(++done, jobs.length);
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, worker));
   const full = meta.dimensions;
   return new CoarseVolume({ dims: { x: X, y: Y, z: Z }, data, lod: level.lod, factor: { x: full[0] / X, y: full[1] / Y, z: full[2] / Z } });
+}
+
+const PLANE_KINDS = { uint8: [Uint8Array, 255], uint16: [Uint16Array, 65535] }; // dtype -> [array type, the value that is 1]
+
+/**
+ * The same coarse volume, but from the server: one z plane per request of the chosen level (/slices/<token>/xy/<z>?level=),
+ * as raw samples in the volume's own data type. These are the numbers the histogram and the slice views are made of, so
+ * the values are on the scale of the transfer function axis (8-bit: /255, 16-bit: /65535) whatever the 3D viewer's
+ * bricks hold. Throws when the server's planes are not what was expected (the caller can fall back to kiln's bricks).
+ * @param {{baseUrl: string, levels: object[], maxVoxels?: number, signal?: AbortSignal, onProgress?: Function, concurrency?: number, fetchFn?: Function, fullDims: number[]}} o
+ *   baseUrl: ".../slices/<token>/"; levels: the volume's levels ({lod, dimensions}); fullDims: the finest level's dimensions
+ */
+export async function loadCoarseVolumeFromPlanes({ baseUrl, levels, fullDims, maxVoxels = 8_000_000, signal, onProgress, concurrency = 6, fetchFn = (...a) => fetch(...a) }) {
+  const level = chooseLevel(levels, maxVoxels);
+  const [X, Y, Z] = level.dimensions;
+  const data = new Float32Array(X * Y * Z);
+  let next = 0, done = 0, rawMin = Infinity, rawMax = -Infinity, dtype = null;
+  const worker = async () => {
+    while (next < Z) {
+      if (signal?.aborted) throw Object.assign(new Error("Cancelled"), { cancelled: true });
+      const z = next++;
+      const res = await fetchFn(`${baseUrl}xy/${z}?level=${level.lod}`, { signal });
+      if (!res.ok) throw new Error(`plane ${z} of level ${level.lod}: HTTP ${res.status}`);
+      dtype = res.headers.get("X-Plane-Dtype");
+      const kind = PLANE_KINDS[dtype];
+      if (!kind) throw new Error(`planes of ${dtype} data are not supported here`);
+      const w = Number(res.headers.get("X-Plane-Width")), h = Number(res.headers.get("X-Plane-Height"));
+      if (w !== X || h !== Y) throw new Error(`plane ${z} is ${w}x${h}, expected ${X}x${Y}`);
+      const src = new kind[0](await res.arrayBuffer());
+      if (src.length !== X * Y) throw new Error(`plane ${z} has ${src.length} samples, expected ${X * Y}`);
+      const base = z * X * Y;
+      for (let i = 0; i < src.length; i++) {
+        const q = src[i];
+        data[base + i] = q / kind[1];
+        if (q < rawMin) rawMin = q;
+        if (q > rawMax) rawMax = q;
+      }
+      onProgress?.(++done, Z);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, Z) }, worker));
+  return new CoarseVolume({ dims: { x: X, y: Y, z: Z }, data, lod: level.lod, factor: { x: fullDims[0] / X, y: fullDims[1] / Y, z: fullDims[2] / Z } });
 }
 
 const interp = (points, x) => {
@@ -382,7 +445,7 @@ export const DVR_THRESHOLD = 0.15; // the opacity at which a ray counts as havin
  * outside which nothing is shown; `removed(worldPoint)` tells whether a crop shape removes a position (it counts as
  * empty). Returns { point (voxel coordinates in `dims`), value, accuracy (voxels) } or null.
  */
-export function pickVolume(vol, ray, size, dims, { mode = "dvr", isoValue = 0.5, tf = {}, clip = null, removed = null } = {}) {
+export function pickVolume(vol, ray, size, dims, { mode = "dvr", isoValue = 0.5, tf = {}, clip = null, removed = null, trace = null } = {}) {
   const half = size.map((s) => s / 2);
   const span = rayBox(ray.origin, ray.dir, half.map((h) => -h), half);
   if (!span) return null;
@@ -408,13 +471,22 @@ export function pickVolume(vol, ray, size, dims, { mode = "dvr", isoValue = 0.5,
     return { point: roundPoint({ x: n[0] * dims.x, y: n[1] * dims.y, z: n[2] * dims.z }), value, accuracy: vol.accuracy, t };
   };
   let prevT = t0, prevV = val(t0);
+  if (trace) Object.assign(trace, { t0, t1, dt, startValue: prevV, startPoint: at(t0), endValue: val(t1) }); // (for the console: where the ray enters and what is there)
   if (mode === "mip") {
     let bestT = t0, bestV = prevV;
     for (let t = t0 + dt; t <= t1; t += dt) { const v = val(t); if (v > bestV) { bestV = v; bestT = t; } }
     return bestV > 0.02 ? result(bestT, bestV) : null;
   }
-  const f = mode === "iso" ? (v) => v - isoValue : (v) => op(v) - DVR_THRESHOLD; // crosses zero at the surface
-  if (f(prevV) >= 0) return result(t0, prevV); // starts inside
+  // The renderer compares the iso value with the windowed density (see applyWindow in its shader), as it does the opacity curve
+  const win = (v) => clamp((v - ((tf.windowCenter ?? 0.5) - (tf.windowWidth ?? 1) / 2)) / Math.max(tf.windowWidth ?? 1, 1e-6), 0, 1);
+  const f = mode === "iso" ? (v) => win(v) - isoValue : (v) => op(v) - DVR_THRESHOLD; // crosses zero at the surface
+  if (f(prevV) >= 0) {
+    // Already above the surface level at the start. Entering through a face of the box, that face is what the view shows:
+    // a hit. With the camera inside the volume (t0 = 0) the "hit" would be the camera itself, a point on the viewport plane.
+    if (t0 > 0) return result(t0, prevV);
+    if (trace) trace.insideAtCamera = true;
+    return null;
+  }
   for (let t = t0 + dt; t <= t1 + dt; t += dt) {
     const tt = Math.min(t, t1);
     const v = val(tt);
