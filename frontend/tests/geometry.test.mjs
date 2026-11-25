@@ -325,6 +325,9 @@ test("applyWindow maps the window to 0..1", () => {
   assert.equal(applyWindow(-1000, 50, 100), 0);
   assert.equal(applyWindow(1000, 50, 100), 1);
   assert.equal(applyWindow(25, 50, 100, true), 0.75);
+  assert.equal(applyWindow(25, 50, 100, false, 2), 0.5);   // gamma 2: sqrt(0.25)
+  assert.equal(applyWindow(0, 50, 100, false, 2), 0);
+  assert.equal(applyWindow(100, 50, 100, false, 0.5), 1);
 });
 
 test("dragWindow: horizontal changes the width, vertical the centre, both within limits", () => {

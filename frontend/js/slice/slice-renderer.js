@@ -12,7 +12,7 @@ struct U {
   b: vec4f,  // pixels per voxel (u, v), flip (u, v)
   c: vec4f,  // plane extent in voxels (u, v), window centre, window width
   d: vec4f,  // taps per pixel side, stride of the texture, invert (0/1), background
-  e: vec4f,  // colour lookup table: enabled (0/1), number of entries
+  e: vec4f,  // colour lookup table: enabled (0/1), number of entries, gamma
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var plane: texture_2d<${sampleType}>;
@@ -76,7 +76,7 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   }
 
   let g0 = clamp((v - (u.c.z - u.c.w * 0.5)) / u.c.w, 0.0, 1.0);   // the windowed value
-  var g = g0;
+  var g = pow(g0, 1.0 / max(u.e.z, 1e-3));                         // gamma: > 1 brightens the mid-tones (opacity keeps following g0)
   if (u.d.z > 0.5) { g = 1.0 - g; }
   if (u.e.x > 0.5) {
     let n = u.e.y;
@@ -116,7 +116,7 @@ export function buildUniforms(v, stride = 1) {
     v.ppv.u, v.ppv.v, v.flip.u, v.flip.v,
     v.extent.u, v.extent.v, v.window.center, Math.max(v.window.width, 1e-6),
     taps, stride, v.invert ? 1 : 0, v.background ?? 0.06,
-    v.lut ? 1 : 0, TF_SIZE, 0, 0,
+    v.lut ? 1 : 0, TF_SIZE, v.gamma ?? 1, 0,
   ]);
 }
 
@@ -229,6 +229,7 @@ export class SliceRenderer {
    * @param {{u:number,v:number}} v.ppv   target pixels per voxel
    * @param {{u:number,v:number}} v.flip
    * @param {{center:number,width:number}} v.window
+   * @param {number} [v.gamma]   display gamma (1 = linear; > 1 brightens the mid-tones)
    */
   draw(pane, target, targetFormat, v) {
     const dtype = pane.plane?.dtype;

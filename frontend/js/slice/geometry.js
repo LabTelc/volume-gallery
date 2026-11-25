@@ -409,8 +409,8 @@ export function fullRangeWindow(dtype) {
 }
 
 /** CPU mirror of the shader's window function. Output 0..1. */
-export function applyWindow(value, center, width, invert = false) {
-  const g = clamp((value - (center - width / 2)) / width, 0, 1);
+export function applyWindow(value, center, width, invert = false, gamma = 1) {
+  const g = Math.pow(clamp((value - (center - width / 2)) / width, 0, 1), 1 / Math.max(gamma, 1e-3));
   return invert ? 1 - g : g;
 }
 

@@ -2,7 +2,7 @@
 // section and reuses the panel's own CSS classes. The panel is recreated on every viewer
 // reload, so this section keeps no state of its own: everything lives in SliceState.
 
-import { ANGLE_LIMITS } from "./cursor.js";
+import { ANGLE_LIMITS, GAMMA_MIN, GAMMA_MAX } from "./cursor.js";
 import { TF_LABELS, TF_PRESET_NAMES, insertStop } from "./transfer-function.js";
 import { mountCurveEditor } from "./opacity-curve.js";
 import { resampleHistogram } from "../histogram.js";
@@ -40,6 +40,9 @@ const numberRow = (role, label, value, min, max, step, title = "") => `
     <span class="ctl-row-label ctl-select-label">${label}</span>
     <input type="number" class="ctl-select-input slice-num" data-role="${role}" value="${value}" min="${min}" max="${max}" step="${step}">
   </label>`;
+
+// position of a gamma on its (logarithmic) slider, in percent
+const gammaPct = (g) => ((Math.log10(g) - Math.log10(GAMMA_MIN)) / (Math.log10(GAMMA_MAX) - Math.log10(GAMMA_MIN))) * 100;
 
 function newSection(panelBody) {
   panelBody.querySelector('[data-role="slice-section"]')?.remove();
@@ -114,6 +117,14 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
         <button type="button" class="ctl-mini-btn" data-role="tf-undo" title="Undo the last change to the transfer function (Ctrl+Z)" disabled>Undo</button>
         <button type="button" class="ctl-mini-btn" data-role="tf-redo" title="Redo (Ctrl+Shift+Z)" disabled>Redo</button></div>
       ${toggle("invert", "Invert", st.invert, "Reverse the colour scale")}
+      <div class="ctl-slider-row" title="Display gamma of the slice views: above 1 brightens the mid-tones, below 1 darkens them (opacity is not affected). Double-click the label to reset.">
+        <span class="ctl-row-label ctl-slider-label" data-role="gamma-label">Gamma</span>
+        <div class="ctl-slider-track">
+          <div class="ctl-slider-fill" data-role="fill-gamma" style="width:${gammaPct(st.gamma)}%"></div>
+          <input type="range" class="ctl-slider-input" data-role="slider-gamma" min="${Math.log10(GAMMA_MIN)}" max="${Math.log10(GAMMA_MAX)}" step="0.005" value="${Math.log10(st.gamma)}" aria-label="Gamma">
+        </div>
+        <input type="number" class="ctl-select-input slice-num" data-role="gamma" value="${+st.gamma.toFixed(2)}" min="${GAMMA_MIN}" max="${GAMMA_MAX}" step="0.05" aria-label="Gamma">
+      </div>
 
       <div class="ctl-eyebrow ctl-subhead">Cursor and planes</div>
       ${toggle("crosshair", "Crosshairs in slices", st.showCrosshair, "Show where the other two panes cut through each slice pane")}
@@ -141,6 +152,9 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
     if (Number.isFinite(v)) apply(v);
   });
   q("invert").addEventListener("change", (e) => st.setInvert(e.target.checked));
+  q("slider-gamma").addEventListener("input", (e) => st.setGamma(Math.pow(10, parseFloat(e.target.value))));
+  q("gamma").addEventListener("change", (e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) st.setGamma(v); else e.target.value = +st.gamma.toFixed(2); });
+  q("gamma-label").addEventListener("dblclick", () => st.setGamma(1));
   q("crosshair").addEventListener("change", (e) => st.setOption("showCrosshair", e.target.checked));
   q("scalebar").addEventListener("change", (e) => st.setOption("showScaleBar", e.target.checked));
   q("cursor3d").addEventListener("change", (e) => st.setOption("show3dCursor", e.target.checked));
@@ -447,6 +461,9 @@ export function mountSliceControls(panelBody, views, { getHistogram } = {}) {
     const set = (role, v) => { const el = q(role); if (el && document.activeElement !== el) el.value = v; };
     for (const a of ["x", "y", "z"]) set(`cur-${a}`, st.cursor[a] + 1);
     q("invert").checked = st.invert;
+    set("gamma", +st.gamma.toFixed(2));
+    if (document.activeElement !== q("slider-gamma")) q("slider-gamma").value = Math.log10(st.gamma);
+    q("fill-gamma").style.width = `${gammaPct(st.gamma)}%`;
     q("cursor3d").checked = st.show3dCursor;
     q("planes3d").checked = st.show3dPlanes;
     q("scalebar").checked = st.showScaleBar !== false;

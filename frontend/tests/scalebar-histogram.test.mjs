@@ -16,11 +16,11 @@ test("scale bar: the longest 1, 2 or 5 x 10^n that fits", () => {
   for (const [max, um, text] of cases) assert.deepEqual(niceScaleLength(max), { um, text }, `max ${max}`);
 });
 
-test("scale bar: units switch at 1 mm, 1 cm and 1 m", () => {
+test("scale bar: units switch at 1 mm and 1 m (no cm)", () => {
   assert.equal(niceScaleLength(1000).text, "1 mm");
   assert.equal(niceScaleLength(2500).text, "2 mm");
-  assert.equal(niceScaleLength(10_000).text, "1 cm");
-  assert.equal(niceScaleLength(5e5).text, "50 cm");
+  assert.equal(niceScaleLength(10_000).text, "10 mm");
+  assert.equal(niceScaleLength(5e5).text, "500 mm");
   assert.equal(niceScaleLength(1e6).text, "1 m");
   assert.equal(niceScaleLength(0.5).text, "500 nm");
   assert.equal(niceScaleLength(0.002).text, "2 nm");

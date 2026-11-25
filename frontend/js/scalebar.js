@@ -2,7 +2,7 @@
 // (slice/slice-views.js). Pure: no DOM. The voxel spacing in volume.json is taken to be
 // micrometres, so every length here is in micrometres.
 
-const UNITS = [["nm", 1e-3], ["\u00b5m", 1], ["mm", 1e3], ["cm", 1e4], ["m", 1e6]]; // [label, micrometres]
+const UNITS = [["nm", 1e-3], ["\u00b5m", 1], ["mm", 1e3], ["m", 1e6]]; // [label, micrometres]
 
 /** The longest "nice" length (1, 2 or 5 x 10^n) that is at most `maxUm`, as { um, text }; null for a bad input. */
 export function niceScaleLength(maxUm) {

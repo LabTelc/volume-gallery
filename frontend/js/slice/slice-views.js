@@ -344,6 +344,7 @@ export class Pane {
       flip: st.flips[this.axis],
       window: st.window,
       invert: st.invert,
+      gamma: st.gamma,
       lut: needsLut(st.tf), // the plain opaque grey ramp skips the colour table
     });
     this.drawOverlay(ppv);
@@ -1113,6 +1114,7 @@ export class SliceViews {
         flip,
         window: st.window,
         invert: st.invert,
+        gamma: st.gamma,
         lut: !gray,
       });
       return { width, height, rgba, gray };

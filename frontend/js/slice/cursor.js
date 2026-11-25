@@ -12,6 +12,8 @@ import { decodeAlpha, decodeTf, defaultAlpha, encodeAlpha, isOpaque, normalizeAl
 export const LAYOUTS = ["3d", "quad", "xy", "xz", "yz"];
 
 // The orientation of the three slice planes as rotations about the volume's x, y, z axes (degrees; see geometry.js)
+export const GAMMA_MIN = 0.1;
+export const GAMMA_MAX = 5;
 export const ANGLE_LIMITS = { rx: 180, ry: 90, rz: 180 };
 const ZERO_PSI = () => ({ xy: 0, xz: 0, yz: 0 });
 
@@ -42,6 +44,7 @@ export class SliceState {
     this.defaultWindow = win ?? fullRangeWindow(dtype);
     this.window = { ...this.defaultWindow };
     this.invert = false;
+    this.gamma = 1; // display gamma of the slice views (1 = linear; > 1 brightens the mid-tones)
     this.channel = 0;
     this.layout = LAYOUTS.includes(layout) ? layout : "3d";
     this.linkZoom = false;
@@ -272,6 +275,11 @@ export class SliceState {
     this.invert = !!v;
     this._emit("window");
   }
+  setGamma(g) {
+    if (!Number.isFinite(g)) return;
+    this.gamma = clamp(g, GAMMA_MIN, GAMMA_MAX);
+    this._emit("window");
+  }
   setChannel(c) {
     const ch = clamp(Math.round(c), 0, this.channels - 1);
     if (ch !== this.channel) {
@@ -423,6 +431,7 @@ export class SliceState {
     const centred = ["x", "y", "z"].every((a) => Math.abs(this.pos[a] - this.cursor[a] - 0.5) < 1e-6);
     p.cursor = centred ? `${this.cursor.x},${this.cursor.y},${this.cursor.z}` : ["x", "y", "z"].map((a) => (+this.pos[a].toFixed(3)).toString()).join(","); // whole numbers: voxel indices
     if (this.layout !== "3d") p.layout = this.layout;
+    if (Math.abs(this.gamma - 1) > 1e-6) p.gam = String(+this.gamma.toFixed(3));
     if (this.channel) p.ch = String(this.channel);
     const e = this.euler();
     if (e.rx || e.ry || e.rz) p.ang = `${e.rx},${e.ry},${e.rz}`;
@@ -441,6 +450,8 @@ export class SliceState {
       this.setPos({ x: Number.isInteger(x) ? x + 0.5 : x, y: Number.isInteger(y) ? y + 0.5 : y, z: Number.isInteger(z) ? z + 0.5 : z }, "url");
     }
     // (an old link's "win" is ignored: the slice views always span the data's whole range)
+    const gam = get("gam");
+    if (gam !== null && gam !== undefined && gam !== "" && Number.isFinite(Number(gam))) this.setGamma(Number(gam));
     const ch = Number(get("ch"));
     if (Number.isFinite(ch) && get("ch") !== null) this.setChannel(ch);
     const ang = (get("ang") ?? "").split(",").map(Number); // (links of the old angled view carry a fourth number: ignored)
