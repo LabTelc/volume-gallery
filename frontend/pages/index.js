@@ -27,19 +27,26 @@ const SORTS = {
   status: "Status (problems first)",
 };
 const VIEWS = { folders: "Folders", flat: "Flat list", "by-type": "Grouped by type" };
+const LAYOUTS = { list: "List", squares: "Squares" };
+// Icons for the layout switch: rows (list) and bricks (squares).
+const LAYOUT_ICONS = {
+  list: `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M5.5 4h8M5.5 8h8M5.5 12h8"/><circle cx="2.4" cy="4" r="0.6" fill="currentColor"/><circle cx="2.4" cy="8" r="0.6" fill="currentColor"/><circle cx="2.4" cy="12" r="0.6" fill="currentColor"/></svg>`,
+  squares: `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="5" height="5" rx="0.8"/><rect x="9" y="2" width="5" height="5" rx="0.8"/><rect x="2" y="9" width="5" height="5" rx="0.8"/><rect x="9" y="9" width="5" height="5" rx="0.8"/></svg>`,
+};
 const TYPES = { all: "All types", volume: "CT volumes", mesh: "Meshes", pointcloud: "Point clouds" };
 const TYPE_ORDER = { volume: 0, mesh: 1, pointcloud: 2 };
 const TYPE_TITLES = { volume: "CT volumes", mesh: "Meshes", pointcloud: "Point clouds" };
 const STATUS_ORDER = { failed: 0, processing: 1, uploaded: 2, ready: 3 };
 
 function loadPrefs() {
-  const defaults = { sort: "newest", view: "folders", type: "all" };
+  const defaults = { sort: "newest", view: "folders", type: "all", layout: "list" };
   try {
     const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
     return {
       sort: saved.sort in SORTS ? saved.sort : defaults.sort,
       view: saved.view in VIEWS ? saved.view : defaults.view,
       type: saved.type in TYPES ? saved.type : defaults.type,
+      layout: saved.layout in LAYOUTS ? saved.layout : defaults.layout,
     };
   } catch (_) { return defaults; }
 }
@@ -60,7 +67,7 @@ const options = (map, current) =>
 
 document.getElementById("shell").innerHTML = `
   ${renderShell("gallery", role, getUsername())}
-  <main>
+  <main id="gallery-main">
     <div class="toolbar">
       <div>
         <h1>Gallery</h1>
@@ -85,6 +92,13 @@ document.getElementById("shell").innerHTML = `
       <div class="ctl">
         <label for="f-view">Organise</label>
         <select id="f-view">${options(VIEWS, prefs.view)}</select>
+      </div>
+      <div class="ctl">
+        <label id="layout-label">Layout</label>
+        <div class="layout-switch" role="radiogroup" aria-labelledby="layout-label">
+          ${Object.entries(LAYOUT_ICONS).map(([key, icon]) => `
+          <button type="button" role="radio" data-layout="${key}" aria-checked="${key === prefs.layout}" title="${LAYOUTS[key]}" aria-label="${LAYOUTS[key]}">${icon}</button>`).join("")}
+        </div>
       </div>
       <span class="gallery-count" id="count"></span>
     </div>
@@ -163,6 +177,62 @@ function renderRow(v, { showPath = false } = {}) {
         ${viewable && v.asset_type === "volume" ? `<a href="/report.html?id=${v.id}"><button title="Report, attachments and downloads of this volume">Report</button></a>` : ""}
         ${isEditor ? `<button data-edit="${v.id}" data-kind="${v.asset_type}">Edit</button>` : ""}
         ${isEditor ? `<button data-manage="${v.id}" data-kind="${v.asset_type}">Manage</button>` : ""}
+      </div>
+    </div>`;
+}
+
+// The squares layout: a card per item, filling the width of the page. The same data attributes as a row, so
+// dragging into folders, editing and the highlight of a fresh upload work the same way.
+function renderCard(v, { showPath = false } = {}) {
+  const viewable = v.status === "ready";
+  const cached = thumbCache.get(`${v.asset_type}:${v.id}`);
+  const path = showPath && v.folder_id != null ? state.idx.pathOf(v.folder_id) : "";
+  const kind = { volume: "CT volume", mesh: "mesh", pointcloud: "point cloud" }[v.asset_type] || v.asset_type;
+  const tip = [v.title, v.description, path ? `in ${path}` : "", (v.tags || []).join(", ")].filter(Boolean).join("\n");
+  return `
+    <div class="asset-card${v.has_thumbnail ? " with-thumb" : ""}" data-asset-row="${v.id}" data-kind="${v.asset_type}"${isEditor ? ` draggable="true"` : ""} title="${escapeHtml(tip)}">
+      <div class="card-thumb" ${v.has_thumbnail ? `data-thumb="${v.asset_type}:${v.id}"` : ""}>${
+        cached ? `<img src="${cached}" alt="" />` : getSwatchText(v.asset_type)
+      }</div>
+      ${statusBadge(v) ? `<div class="card-badges">${statusBadge(v)}</div>` : ""}
+      <div class="card-actions">
+        ${viewable && v.asset_type === "volume" ? `<a href="/report.html?id=${v.id}"><button type="button" title="Report, attachments and downloads of this volume">Report</button></a>` : ""}
+        ${isEditor ? `<button type="button" data-edit="${v.id}" data-kind="${v.asset_type}">Edit</button>` : ""}
+        ${isEditor ? `<button type="button" data-manage="${v.id}" data-kind="${v.asset_type}">Manage</button>` : ""}
+      </div>
+      <div class="card-info">
+        <div class="card-title">${
+          viewable
+            ? `<a class="card-link" href="/viewers/${v.asset_type}.html?id=${v.id}">${escapeHtml(v.title)}</a>`
+            : `<span class="disabled">${escapeHtml(v.title)}</span>`
+        }</div>
+        <div class="card-sub">${escapeHtml(kind)}${v.asset_type === "volume" && v.has_mesh ? " \u00b7 mesh" : ""}</div>
+        ${latestLogLine(v)}
+      </div>
+    </div>`;
+}
+
+// A folder card shows up to four of the datasets inside it (the folder and everything below it, after the
+// filters), preferring ones that have a thumbnail. `preview` = those assets.
+function renderFolderCard(f, count, preview = []) {
+  const cells = [0, 1, 2, 3].map((i) => {
+    const v = preview[i];
+    if (!v) return `<div class="ft-cell empty"></div>`;
+    const cached = thumbCache.get(`${v.asset_type}:${v.id}`);
+    return `<div class="ft-cell" ${v.has_thumbnail ? `data-thumb="${v.asset_type}:${v.id}"` : ""}>${
+      cached ? `<img src="${cached}" alt="" />` : getSwatchText(v.asset_type)
+    }</div>`;
+  }).join("");
+  return `
+    <div class="folder-card${preview.length ? "" : " is-empty"}" data-folder-row="${f.id}"${isEditor ? ` draggable="true"` : ""}>
+      <div class="folder-body" aria-hidden="true">
+        <div class="folder-tab"></div>
+        <div class="folder-tiles">${cells}</div>
+      </div>
+      ${isEditor ? `<div class="card-actions"><button type="button" data-edit-folder="${f.id}">Edit</button></div>` : ""}
+      <div class="card-info">
+        <div class="card-title"><a class="card-link" href="${folderHref(f.id)}" data-open-folder="${f.id}">${escapeHtml(f.name)}</a></div>
+        <div class="card-sub">${count} ${count === 1 ? "item" : "items"}</div>
       </div>
     </div>`;
 }
@@ -252,6 +322,7 @@ function render() {
   renderTagBar();
 
   if (state.assets.length === 0) {
+    listEl.className = "";
     document.getElementById("count").textContent = "";
     listEl.innerHTML = `<div class="empty-state">
       No assets yet.${role !== "reader" ? " Use \u201cUpload asset\u201d to add one." : " Ask an editor to grant you access."}
@@ -267,15 +338,24 @@ function render() {
   document.getElementById("count").textContent =
     `${filtered.length} of ${state.assets.length} ${state.assets.length === 1 ? "item" : "items"}`;
 
+  const squares = prefs.layout === "squares";
+  const item = squares ? renderCard : renderRow;
+  const folderItem = squares ? renderFolderCard : renderFolderRow;
+  listEl.className = squares ? "gallery-grid" : "";
+
   let html = "";
   if (prefs.view === "folders" && !searching) {
     const inFolder = (a) => (a.folder_id ?? null) === state.folder;
     const here = sortAssets(filtered.filter(inFolder));
     const subfolders = state.idx.kids.get(state.folder) || [];
-    const countIn = (f) => { const ids = state.idx.subtree(f.id); return filtered.filter((a) => ids.has(a.folder_id)).length; };
+    const inside = (f) => { const ids = state.idx.subtree(f.id); return filtered.filter((a) => ids.has(a.folder_id)); };
+    const previewOf = (list) => {
+      const sorted = sortAssets(list);
+      return [...sorted.filter((a) => a.has_thumbnail), ...sorted.filter((a) => !a.has_thumbnail)].slice(0, 4);
+    };
     html += renderCrumbs();
-    html += subfolders.map((f) => renderFolderRow(f, countIn(f))).join("");
-    html += here.map((a) => renderRow(a)).join("");
+    html += subfolders.map((f) => { const list = inside(f); return folderItem(f, list.length, squares ? previewOf(list) : undefined); }).join("");
+    html += here.map((a) => item(a)).join("");
     if (!subfolders.length && !here.length) {
       html += `<div class="empty-state">${state.folder == null ? "Nothing here." : "This folder is empty."}${
         isEditor && state.folder != null ? " Drag items onto a folder, or use Edit on an item to put it here." : ""}</div>`;
@@ -284,13 +364,13 @@ function render() {
     for (const kind of Object.keys(TYPE_TITLES)) {
       const group = sortAssets(filtered.filter((a) => a.asset_type === kind));
       if (!group.length) continue;
-      html += `<div class="group-head">${TYPE_TITLES[kind]} (${group.length})</div>` + group.map((a) => renderRow(a, { showPath: true })).join("");
+      html += `<div class="group-head">${TYPE_TITLES[kind]} (${group.length})</div>` + group.map((a) => item(a, { showPath: true })).join("");
     }
   } else {
     // Flat list; this is also what a search or tag filter shows, across all folders.
     html += searching && prefs.view === "folders"
       ? `<p class="dim" style="font-size:0.85em;margin-top:0">Showing matches from every folder.</p>` : "";
-    html += sortAssets(filtered).map((a) => renderRow(a, { showPath: true })).join("");
+    html += sortAssets(filtered).map((a) => item(a, { showPath: true })).join("");
   }
   if (!filtered.length && searching) {
     html += `<div class="empty-state">No items match.</div>`;
@@ -400,7 +480,7 @@ function wireList(listEl) {
 
   if (!isEditor) return;
   // Drag an item (or a folder) onto a folder row, or onto a folder in the path above the list.
-  listEl.querySelectorAll(".asset-row[data-asset-row]").forEach((row) => {
+  listEl.querySelectorAll("[data-asset-row]").forEach((row) => {
     row.addEventListener("dragstart", (e) => {
       drag = { type: "asset", kind: row.dataset.kind, id: Number(row.dataset.assetRow) };
       e.dataTransfer.effectAllowed = "move";
@@ -409,7 +489,7 @@ function wireList(listEl) {
     });
     row.addEventListener("dragend", () => { drag = null; row.classList.remove("dragging"); });
   });
-  listEl.querySelectorAll(".folder-row[data-folder-row]").forEach((row) => {
+  listEl.querySelectorAll("[data-folder-row]").forEach((row) => {
     row.addEventListener("dragstart", (e) => {
       drag = { type: "folder", id: Number(row.dataset.folderRow) };
       e.dataTransfer.effectAllowed = "move";
@@ -419,7 +499,7 @@ function wireList(listEl) {
     row.addEventListener("dragend", () => { drag = null; row.classList.remove("dragging"); });
   });
   const targets = [
-    ...[...listEl.querySelectorAll(".folder-row[data-folder-row]")].map((el) => [el, Number(el.dataset.folderRow)]),
+    ...[...listEl.querySelectorAll("[data-folder-row]")].map((el) => [el, Number(el.dataset.folderRow)]),
     ...[...listEl.querySelectorAll("[data-drop-folder]")].map((el) => [el, el.dataset.dropFolder === "" ? null : Number(el.dataset.dropFolder)]),
   ];
   for (const [el, folderId] of targets) {
@@ -445,6 +525,15 @@ document.getElementById("search").addEventListener("input", (e) => { state.searc
 for (const [id, key] of [["f-type", "type"], ["f-sort", "sort"], ["f-view", "view"]]) {
   document.getElementById(id).addEventListener("change", (e) => { prefs[key] = e.target.value; savePrefs(); render(); });
 }
+document.querySelector(".layout-switch").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-layout]");
+  if (!btn || btn.dataset.layout === prefs.layout) return;
+  prefs.layout = btn.dataset.layout;
+  savePrefs();
+  document.querySelectorAll(".layout-switch [data-layout]").forEach((b) =>
+    b.setAttribute("aria-checked", String(b.dataset.layout === prefs.layout)));
+  render();
+});
 document.getElementById("tag-bar").addEventListener("click", (e) => {
   const chip = e.target.closest("[data-tag], [data-clear-tags]");
   if (!chip) return;

@@ -7,6 +7,7 @@ import {
 import { pageHint } from "../js/help.js";
 import { renderMarkdown } from "../js/report-markdown.js";
 import { wrapSelection, prefixLines, insertText, insertDisplayMath, imageMarkdown } from "../js/markdown-edit.js";
+import { buildAnchors, mapScroll } from "../js/scroll-sync.js";
 import { openTiffExportDialog } from "../js/tiff-export.js";
 
 requireLogin();
@@ -118,6 +119,12 @@ const TOOLS = [
   ["display", "$$", "Formula on its own lines", (v, s, e) => insertDisplayMath(v, s, e)],
 ];
 
+// The editor fills the whole screen (an overlay above the page, so the rail is out of the way too): a bar with Save
+// and Cancel, the formatting toolbar, and below it the text and its preview side by side, two panes of the same
+// size that each scroll on their own and follow each other (js/scroll-sync.js). Images of the report and a short
+// markdown help open in a drawer under the toolbar.
+const HELP_HTML = `<p class="dim report-help">Markdown: <code># heading</code>, <code>**bold**</code>, <code>*italic*</code>, lists, <code>&gt; quote</code>, tables, <code>[text](https://\u2026)</code>. Formulas are LaTeX: <code>$a^2+b^2=c^2$</code> in a line, <code>$$ \u2026 $$</code> on lines of their own. Images: <code>![caption](img:12)</code> (the Image\u2026 button adds one). Raw HTML is not shown. Ctrl+S saves.</p>`;
+
 async function startEditing() {
   state.editing = true;
   try {
@@ -127,49 +134,152 @@ async function startEditing() {
     showError(err.message);
   }
   renderTop();
-  $("report-section").innerHTML = `
+
+  const overlay = document.createElement("div");
+  overlay.className = "report-editor";
+  overlay.id = "report-editor";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-label", "Edit report");
+  overlay.innerHTML = `
+    <header class="re-head">
+      <div class="re-title">Editing the report of <strong>${escapeHtml(state.volume.title)}</strong></div>
+      <span class="dim re-note" id="save-note"></span>
+      <div class="re-actions">
+        <button type="button" class="primary" id="save-btn">Save report</button>
+        <button type="button" id="cancel-btn">Cancel</button>
+      </div>
+    </header>
     <div class="md-toolbar" role="toolbar" aria-label="Formatting">
       ${TOOLS.map(([id, label, title]) => `<button type="button" data-tool="${id}" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`).join("")}
       <button type="button" id="image-btn" title="Add an image to the text">Image\u2026</button>
       <input type="file" id="image-input" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
+      <span class="grow"></span>
+      <button type="button" data-drawer="images" aria-expanded="false">Images (<span id="image-count"></span>)</button>
+      <button type="button" data-drawer="help" aria-expanded="false">Help</button>
     </div>
-    <div class="report-edit">
-      <div>
-        <label for="md-text" class="sr-only">Report text (markdown)</label>
-        <textarea id="md-text" spellcheck="true" placeholder="Write the report in markdown. Formulas go between dollar signs: $E = mc^2$. Drop or paste an image here to add it."></textarea>
-      </div>
+    <div class="re-drawer" id="re-drawer" hidden></div>
+    <div class="re-panes">
+      <label for="md-text" class="sr-only">Report text (markdown)</label>
+      <textarea id="md-text" spellcheck="true" placeholder="Write the report in markdown. Formulas go between dollar signs: $E = mc^2$. Drop or paste an image here to add it."></textarea>
       <div class="report-body report-preview" id="md-preview" aria-label="Preview"></div>
-    </div>
-    <div class="report-edit-foot">
-      <button type="button" class="primary" id="save-btn">Save report</button>
-      <button type="button" id="cancel-btn">Cancel</button>
-      <span class="dim" id="save-note"></span>
-    </div>
-    <details class="report-images" id="images-box"><summary>Images of this report (<span id="image-count"></span>)</summary><div id="image-list"></div></details>
-    <p class="dim report-help">Markdown: <code># heading</code>, <code>**bold**</code>, <code>*italic*</code>, lists, <code>&gt; quote</code>, tables, <code>[text](https://\u2026)</code>. Formulas are LaTeX: <code>$a^2+b^2=c^2$</code> in a line, <code>$$ \u2026 $$</code> on lines of their own. Raw HTML is not shown.</p>`;
+    </div>`;
+  document.body.appendChild(overlay);
+  document.body.classList.add("report-editing");
+
   const area = $("md-text");
+  const pane = $("md-preview");
   area.value = state.report.markdown;
   state.dirty = false;
-  const preview = () => { $("md-preview").innerHTML = renderMarkdown(area.value); hydrateImages($("md-preview")); };
+
+  // ---- text and preview follow each other
+  let anchors = null;
+  let lineTops = null;
+  let mirror = null;
+  let setting = null; // the scroll position we just set on a pane: its scroll event is ours, not the person's
+  const invalidate = () => { anchors = null; lineTops = null; };
+
+  // The y of the top of every line of the text, measured in a hidden copy of the textarea that wraps the same way.
+  function measureLines() {
+    const lines = area.value.split("\n");
+    if (lines.length > 20000) return null; // too long to measure on every change: the panes follow each other by ratio
+    const cs = getComputedStyle(area);
+    if (!mirror) {
+      mirror = document.createElement("div");
+      mirror.className = "re-mirror";
+      mirror.setAttribute("aria-hidden", "true");
+      overlay.appendChild(mirror);
+    }
+    for (const prop of ["fontFamily", "fontSize", "fontWeight", "lineHeight", "letterSpacing", "tabSize", "paddingTop", "paddingLeft", "paddingRight"]) {
+      mirror.style[prop] = cs[prop];
+    }
+    mirror.style.width = `${area.clientWidth}px`;
+    const frag = document.createDocumentFragment();
+    for (const line of lines) {
+      const row = document.createElement("div");
+      row.textContent = line === "" ? "\u200b" : line;
+      frag.appendChild(row);
+    }
+    mirror.replaceChildren(frag);
+    const pad = parseFloat(cs.paddingTop) || 0;
+    return Array.from(mirror.children, (row) => row.offsetTop + pad);
+  }
+
+  function computeAnchors() {
+    if (!lineTops) lineTops = measureLines();
+    const textMax = area.scrollHeight - area.clientHeight;
+    const previewMax = pane.scrollHeight - pane.clientHeight;
+    const pairs = [];
+    if (lineTops) {
+      const paneTop = pane.getBoundingClientRect().top;
+      for (const el of pane.querySelectorAll("[data-line]")) {
+        const y = lineTops[Number(el.dataset.line)];
+        if (y !== undefined) pairs.push([y, el.getBoundingClientRect().top - paneTop + pane.scrollTop]);
+      }
+    }
+    anchors = buildAnchors(pairs, textMax, previewMax);
+  }
+
+  function follow(source) {
+    if (!anchors) computeAnchors();
+    const [from, src, dst] = source === "text" ? [0, area, pane] : [1, pane, area];
+    const dstMax = dst.scrollHeight - dst.clientHeight;
+    const atEnd = src.scrollTop >= src.scrollHeight - src.clientHeight - 1;
+    const top = Math.max(0, Math.min(dstMax, atEnd ? dstMax : mapScroll(anchors, src.scrollTop, from)));
+    if (Math.abs(dst.scrollTop - top) < 1) return;
+    setting = { el: dst, top };
+    dst.scrollTop = top;
+  }
+  const onScroll = (source, el) => () => {
+    if (setting && setting.el === el && Math.abs(el.scrollTop - setting.top) < 2) { setting = null; return; }
+    follow(source);
+  };
+  area.addEventListener("scroll", onScroll("text", area));
+  pane.addEventListener("scroll", onScroll("preview", pane));
+  pane.addEventListener("load", () => { invalidate(); follow("text"); }, true); // an image got its height
+  const resizeWatch = new ResizeObserver(() => invalidate());
+  resizeWatch.observe(area);
+  resizeWatch.observe(pane);
+
+  const preview = () => {
+    pane.innerHTML = renderMarkdown(area.value, { sourceLines: true });
+    hydrateImages(pane);
+    invalidate();
+    follow("text");
+  };
   let timer = null;
   area.addEventListener("input", () => {
     state.dirty = area.value !== state.report.markdown;
+    lineTops = null;
     clearTimeout(timer);
     timer = setTimeout(preview, 150);
   });
   preview();
-  renderImageList();
 
+  // ---- toolbar
   const apply = (edit) => {
     area.value = edit.value;
     area.focus();
     area.setSelectionRange(edit.selStart, edit.selEnd);
     area.dispatchEvent(new Event("input"));
   };
-  $("report-section").querySelector(".md-toolbar").addEventListener("click", (e) => {
+  overlay.querySelector(".md-toolbar").addEventListener("click", (e) => {
     const tool = TOOLS.find(([id]) => id === e.target.closest("[data-tool]")?.dataset.tool);
     if (tool) apply(tool[3](area.value, area.selectionStart, area.selectionEnd));
   });
+
+  // ---- drawer: the images of this report, and the help
+  let drawer = null;
+  const drawerEl = $("re-drawer");
+  const showDrawer = (which) => {
+    drawer = which === drawer ? null : which;
+    drawerEl.hidden = drawer === null;
+    overlay.querySelectorAll("[data-drawer]").forEach((b) => b.setAttribute("aria-expanded", String(b.dataset.drawer === drawer)));
+    if (drawer === "help") drawerEl.innerHTML = HELP_HTML;
+    if (drawer === "images") renderImageList();
+  };
+  overlay.querySelectorAll("[data-drawer]").forEach((b) => b.addEventListener("click", () => showDrawer(b.dataset.drawer)));
+  state.refreshImages = () => { $("image-count").textContent = String(state.images.length); if (drawer === "images") renderImageList(); };
+  state.refreshImages();
 
   const addImage = async (file) => {
     if (!file) return;
@@ -177,7 +287,7 @@ async function startEditing() {
     try {
       const image = await api.uploadReportImage(volumeId, file);
       state.images.push(image);
-      renderImageList();
+      state.refreshImages();
       apply(insertText(area.value, area.selectionStart, area.selectionEnd, imageMarkdown(image.id, image.filename)));
       $("save-note").textContent = "";
     } catch (err) {
@@ -202,8 +312,10 @@ async function startEditing() {
     for (const file of files) await addImage(file);
   });
 
+  // ---- save, cancel
   $("save-btn").addEventListener("click", async (e) => {
-    e.target.disabled = true;
+    const btn = e.currentTarget;
+    btn.disabled = true;
     showError("");
     try {
       state.report = await api.saveReport(volumeId, area.value);
@@ -211,16 +323,30 @@ async function startEditing() {
       stopEditing();
     } catch (err) {
       showError(err.message);
-      e.target.disabled = false;
+      $("save-note").textContent = err.message;
+      btn.disabled = false;
     }
   });
   $("cancel-btn").addEventListener("click", () => { if (confirmLeave()) { state.dirty = false; stopEditing(); } });
+  overlay.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); $("save-btn").click(); }
+  });
+
+  state.closeEditor = () => {
+    clearTimeout(timer);
+    resizeWatch.disconnect();
+    overlay.remove();
+    document.body.classList.remove("report-editing");
+    state.closeEditor = null;
+    state.refreshImages = null;
+  };
   area.focus();
 }
 
 function renderImageList() {
-  $("image-count").textContent = String(state.images.length);
-  $("image-list").innerHTML = state.images.length
+  const box = $("re-drawer");
+  if (!box) return;
+  box.innerHTML = state.images.length
     ? state.images.map((im) => `
         <div class="image-row" data-image="${im.id}">
           <span class="mono">img:${im.id}</span>
@@ -249,7 +375,7 @@ document.addEventListener("click", async (e) => {
       await api.deleteReportImage(volumeId, id);
       state.images = state.images.filter((i) => i.id !== id);
       imageUrls.delete(id);
-      renderImageList();
+      state.refreshImages?.();
       area.dispatchEvent(new Event("input"));
     } catch (err) {
       showError(err.message);
@@ -259,6 +385,7 @@ document.addEventListener("click", async (e) => {
 
 function stopEditing() {
   state.editing = false;
+  state.closeEditor?.();
   renderTop();
   renderReading();
 }

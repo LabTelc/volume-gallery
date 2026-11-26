@@ -6,7 +6,7 @@
     coordinates, since this is a scientific-imaging tool and those really are data,
     not decoration.
   Layout — a fixed left rail (role + nav) and a content column, left-aligned,
-    max content width ~1100px. No card-grid-with-shadows kit; assets are listed as
+    no fixed maximum width (it uses the whole window). No card-grid-with-shadows kit; assets are listed as
     dense rows with a thumbnail swatch, closer to a lab instrument's sample list than
     a marketing grid.
 */
@@ -233,7 +233,7 @@ label { display: block; font-size: 0.85em; color: var(--text-dim); margin-bottom
 .theme-switch svg { width: 14px; height: 14px; }
 @media (prefers-reduced-motion: reduce) { .theme-switch::before { transition: none; } }
 
-main { flex: 1; padding: 2.2em 2.6em; max-width: 1100px; }
+main { flex: 1; min-width: 0; padding: 2.2em 2.6em; }
 
 h1 { font-size: 1.5em; margin: 0 0 0.2em; }
 h2 { font-size: 1.1em; margin: 0 0 0.8em; }
@@ -1021,22 +1021,13 @@ button.tag-chip.active { border-color: var(--accent); color: var(--accent); }
 .report-body .math-block { overflow-x: auto; overflow-y: hidden; }
 .md-toolbar { display: flex; flex-wrap: wrap; gap: 0.35em; margin-bottom: 0.6em; }
 .md-toolbar button { padding: 0.3em 0.7em; }
-.report-edit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1em; align-items: start; }
-.report-edit textarea { width: 100%; min-height: 30em; box-sizing: border-box; font-family: var(--mono); font-size: 0.9em; line-height: 1.5; resize: vertical; }
-.report-preview { min-height: 30em; padding: 0.6em 1em; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); overflow: auto; max-width: none; }
-.report-edit-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6em; margin: 0.8em 0; }
-.report-images { margin: 0.6em 0; }
-.report-images summary { cursor: pointer; color: var(--text-dim); }
 .image-row { display: flex; align-items: center; gap: 0.7em; padding: 0.4em 0; border-bottom: 1px solid var(--line); }
-.report-help { font-size: 0.85em; }
 .attach-row { display: flex; align-items: center; gap: 1em; padding: 0.7em 0; border-bottom: 1px solid var(--line); }
 .attach-main { flex: 1 1 auto; min-width: 0; }
 .attach-name { font-weight: 600; overflow-wrap: anywhere; }
 .attach-row .actions { display: flex; gap: 0.5em; flex-shrink: 0; }
 .attach-add { display: flex; align-items: center; flex-wrap: wrap; gap: 0.8em; margin-top: 0.9em; }
 @media (max-width: 1000px) {
-  .report-edit { grid-template-columns: minmax(0, 1fr); }
-  .report-edit textarea, .report-preview { min-height: 16em; }
   .attach-row { flex-wrap: wrap; }
 }
 
@@ -1056,3 +1047,119 @@ button.tag-chip.active { border-color: var(--accent); color: var(--accent); }
 .task-progress-bar.indeterminate { width: 35%; animation: task-slide 1.4s ease-in-out infinite; }
 @keyframes task-slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
 @media (prefers-reduced-motion: reduce) { .task-progress-bar.indeterminate { animation: none; width: 100%; opacity: 0.4; } }
+
+/* --- gallery, squares layout: cards fill the width of the page --- */
+.gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 1em; align-items: start; }
+.gallery-grid > * { grid-column: 1 / -1; }            /* path, group headings, notes, empty states */
+.gallery-grid > .asset-card, .gallery-grid > .folder-card { grid-column: auto; }
+.asset-card, .folder-card {
+  position: relative; aspect-ratio: 1 / 1; overflow: hidden;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: linear-gradient(135deg, var(--swatch-a), var(--swatch-b));
+}
+.asset-card:hover, .folder-card:hover, .asset-card:focus-within, .folder-card:focus-within { border-color: var(--accent-dim); }
+.asset-card[draggable="true"], .folder-card[draggable="true"] { cursor: grab; }
+.card-thumb {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--text-dim); font-family: var(--mono); font-size: 2em;
+}
+/* folder card: a folder silhouette (tab + body) holding a 2x2 mosaic of the datasets inside */
+.folder-card { background: none; border: none; overflow: visible; }
+.folder-card:hover, .folder-card:focus-within { border: none; }
+.folder-body {
+  position: absolute; inset: 0.9em 0 0 0; border-radius: 0 var(--radius) var(--radius) var(--radius);
+  background: linear-gradient(160deg, var(--swatch-b), var(--swatch-a));
+  border: 1px solid var(--line); padding: 0.6em 0.6em 3.1em;
+}
+.folder-tab {
+  position: absolute; left: -1px; bottom: 100%; width: 42%; height: 0.9em;
+  background: var(--swatch-b); border: 1px solid var(--line); border-bottom: none;
+  border-radius: var(--radius) 0.9em 0 0;
+}
+.folder-card:hover .folder-body, .folder-card:focus-within .folder-body,
+.folder-card:hover .folder-tab, .folder-card:focus-within .folder-tab { border-color: var(--accent-dim); }
+.folder-tiles { width: 100%; height: 100%; display: grid; grid-template: 1fr 1fr / 1fr 1fr; gap: 0.4em; }
+.ft-cell {
+  position: relative; min-width: 0; min-height: 0; overflow: hidden; border-radius: calc(var(--radius) * 0.7);
+  display: flex; align-items: center; justify-content: center;
+  background: var(--panel); border: 1px solid var(--line);
+  color: var(--text-dim); font-family: var(--mono); font-size: 0.7em;
+}
+.ft-cell.empty { background: transparent; border-style: dashed; opacity: 0.45; }
+.folder-card.is-empty .ft-cell { opacity: 0.25; }
+.ft-cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.folder-card .card-info { padding: 0 0.8em 0.65em; }
+.card-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.card-info {                                           /* covers the card, so the title link below can too */
+  position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: flex-end;
+  padding: 0 0.8em 0.65em; pointer-events: none;
+}
+.card-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-title a { color: var(--text); pointer-events: auto; }
+.card-title .disabled { color: var(--text-dim); pointer-events: none; }
+.card-link { text-decoration: none; }
+.card-link::after { content: ""; position: absolute; inset: 0; z-index: 1; }   /* (relative to .card-info, which fills the card) */
+.card-sub { font-family: var(--mono); font-size: 0.78em; color: var(--text-dim); }
+.card-info .log-line { font-size: 0.74em; margin-top: 0.2em; font-family: var(--mono); color: var(--text-dim); }
+.card-info .log-line.failed { color: var(--danger); }
+/* a card with a picture: white text on a darkened lower part, whatever the theme */
+.with-thumb .card-thumb::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 65%;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.82), rgba(0, 0, 0, 0));
+}
+.with-thumb .card-title a { color: #fff; }
+.with-thumb .card-title .disabled { color: rgba(255, 255, 255, 0.65); }
+.with-thumb .card-sub, .with-thumb .card-info .log-line { color: rgba(255, 255, 255, 0.78); }
+.with-thumb .card-info .log-line.failed { color: #ff9a85; }
+.card-badges { position: absolute; top: 0.5em; left: 0.5em; z-index: 2; }
+.card-badges .status-badge { background: var(--panel); }
+.card-actions {
+  position: absolute; top: 0.5em; right: 0.5em; z-index: 2; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.3em;
+  opacity: 0; transition: opacity 0.12s;
+}
+.asset-card:hover .card-actions, .folder-card:hover .card-actions,
+.asset-card:focus-within .card-actions, .folder-card:focus-within .card-actions { opacity: 1; }
+@media (hover: none) { .card-actions { opacity: 1; } }
+.card-actions button { padding: 0.2em 0.6em; font-size: 0.82em; background: var(--panel); }
+@media (max-width: 800px) { .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.7em; } }
+
+/* --- report editor: fills the screen; text and preview are two panes of the same size --- */
+body.report-editing { overflow: hidden; }
+.report-editor {
+  position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column;
+  background: var(--bg); color: var(--text);
+}
+.re-head { display: flex; align-items: center; gap: 1em; padding: 0.6em 1em; border-bottom: 1px solid var(--line); }
+.re-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.re-note { font-size: 0.85em; }
+.re-actions { display: flex; gap: 0.5em; flex-shrink: 0; }
+.report-editor .md-toolbar { margin: 0; padding: 0.5em 1em; border-bottom: 1px solid var(--line); align-items: center; }
+.re-drawer { max-height: 30vh; overflow: auto; padding: 0.4em 1em 0.6em; border-bottom: 1px solid var(--line); background: var(--panel); }
+.re-drawer[hidden] { display: none; }
+.re-drawer .report-help { margin: 0.3em 0; }
+.re-panes {
+  flex: 1 1 0; min-height: 0; display: grid; gap: 1px; background: var(--line);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+}
+.re-panes > textarea, .re-panes > .report-preview {
+  min-width: 0; min-height: 0; height: 100%; box-sizing: border-box; margin: 0; overflow: auto;
+  border: 0; border-radius: 0; padding: 1em 1.2em; background: var(--bg);
+}
+.re-panes > textarea { resize: none; font-family: var(--mono); font-size: 0.9em; line-height: 1.55; color: var(--text); }
+.re-panes > .report-preview { max-width: none; background: var(--panel); }
+.re-panes > textarea:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
+.re-mirror { position: absolute; left: -99999px; top: 0; visibility: hidden; pointer-events: none; box-sizing: border-box; white-space: pre-wrap; overflow-wrap: break-word; border: 0; }
+@media (max-width: 1000px) {
+  .re-panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+  .re-head { flex-wrap: wrap; }
+}
+
+/* --- gallery layout switch: list / bricks icons --- */
+.layout-switch { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.layout-switch button {
+  display: flex; align-items: center; justify-content: center; padding: 0.4em 0.65em;
+  border: none; border-radius: 0; background: transparent; color: var(--text-dim); cursor: pointer;
+}
+.layout-switch button + button { border-left: 1px solid var(--line); }
+.layout-switch button:hover { color: var(--text); border-color: var(--line); }
+.layout-switch button[aria-checked="true"] { background: var(--panel-raised); color: var(--accent); }

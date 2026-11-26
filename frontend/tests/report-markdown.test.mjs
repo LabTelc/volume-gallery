@@ -99,3 +99,15 @@ test("image ids are listed once, in order", () => {
   assert.deepEqual(imageIdsIn(""), []);
   assert.deepEqual(imageIdsIn(null), []);
 });
+
+test("blocks carry their source line only when asked", () => {
+  const text = "# Title\n\npara one\n\n- a\n- b\n\n$$\nx\n$$\n\n```\ncode\n```\n";
+  assert.doesNotMatch(renderMarkdown(text), /data-line/);
+  const html = renderMarkdown(text, { sourceLines: true });
+  assert.match(html, /<h1 data-line="0">/);
+  assert.match(html, /<p data-line="2">/);
+  assert.match(html, /<ul data-line="4">/);
+  assert.match(html, /<li data-line="5">/);
+  assert.match(html, /<div class="math-block" data-line="7">/);
+  assert.match(html, /<code data-line="11">/);
+});

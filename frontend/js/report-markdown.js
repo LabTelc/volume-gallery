@@ -101,7 +101,9 @@ function mathPlugin(md) {
   md.renderer.rules.math_inline = (tokens, i) => renderMath(tokens[i].content, false) ?? `<code>${escapeHtml(tokens[i].content)}</code>`;
   md.renderer.rules.math_block = (tokens, i) => {
     const html = renderMath(tokens[i].content.trim(), true);
-    return html ? `<div class="math-block">${html}</div>\n` : `<pre><code>${escapeHtml(tokens[i].content)}</code></pre>\n`;
+    const line = tokens[i].attrGet("data-line");
+    const mark = line == null ? "" : ` data-line="${line}"`;
+    return html ? `<div class="math-block"${mark}>${html}</div>\n` : `<pre><code${mark}>${escapeHtml(tokens[i].content)}</code></pre>\n`;
   };
 }
 
@@ -109,6 +111,15 @@ function build() {
   const md = new MarkdownIt({ html: false, linkify: false, typographer: false, breaks: false });
   md.validateLink = (url) => SAFE_LINK.test(url.trim()) || REPORT_IMAGE.test(url.trim());
   md.use(mathPlugin);
+
+  // With env.sourceLines the blocks are marked with the line of the text they came from (data-line, counted from 0):
+  // the editor ties its preview's scrolling to the text with it (js/scroll-sync.js). Not used for reading.
+  md.core.ruler.push("source_lines", (state) => {
+    if (!state.env || !state.env.sourceLines) return;
+    for (const token of state.tokens) {
+      if (token.map && token.block && token.nesting >= 0 && token.type !== "inline") token.attrSet("data-line", String(token.map[0]));
+    }
+  });
 
   const defaultLinkOpen = md.renderer.rules.link_open || ((tokens, i, options, _env, self) => self.renderToken(tokens, i, options));
   md.renderer.rules.link_open = (tokens, i, options, env, self) => {
@@ -144,9 +155,10 @@ function build() {
 let md = null;
 
 // The HTML for `source` (a markdown string). Safe to put into the page with innerHTML.
-export function renderMarkdown(source) {
+// With { sourceLines: true } the blocks carry data-line (see build()); the editor's preview uses it.
+export function renderMarkdown(source, { sourceLines = false } = {}) {
   md = md || build();
-  return md.render(String(source || ""));
+  return md.render(String(source || ""), { sourceLines });
 }
 
 // The ids of the uploaded images a text refers to (img:12), in order, without repeats.
