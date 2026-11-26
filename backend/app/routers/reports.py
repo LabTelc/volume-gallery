@@ -8,7 +8,8 @@ GET    /api/volumes/{id}/report/images/{iid}  the image (anyone who can see the 
                                               Authorization header, since an <img> cannot send it)
 DELETE /api/volumes/{id}/report/images/{iid}  delete it (editor)
 
-The text is stored as written and turned into HTML by the browser, which does not accept raw HTML in it (frontend/js/
+The text is kept in the file <volumes>/<slug>/report/report.md (report_store.py); the database only records who saved it
+last and when. It is stored as written and turned into HTML by the browser, which does not accept raw HTML in it (frontend/js/
 report-markdown.js), so a report can show formatting, images and formulas but cannot run anything. Images are checked by
 looking at the file itself: only PNG, JPEG, GIF and WebP are taken (not SVG, which can carry scripts), whatever the
 upload says it is. They are kept in <volumes>/<slug>/report/<id>__<name>.
@@ -22,7 +23,7 @@ from fastapi.responses import Response
 from PIL import Image
 from sqlmodel import Session, select
 
-from .. import audit, workdir
+from .. import audit, report_store, workdir
 from ..config import settings
 from ..database import get_session
 from ..deps import get_current_user, require_editor
@@ -34,7 +35,6 @@ from .volumes import _volume_dir
 
 router = APIRouter(prefix="/api/volumes", tags=["reports"])
 
-REPORT_DIR = "report"
 _IMAGE_TYPES = {"PNG": "image/png", "JPEG": "image/jpeg", "GIF": "image/gif", "WEBP": "image/webp"}
 
 
@@ -44,13 +44,17 @@ def _iso(dt) -> str:
 
 @router.get("/{volume_id}/report", response_model=ReportRead)
 def get_report(volume_id: int, session: Session = Depends(get_session), user: User = Depends(get_current_user)):
-    visible_volume(session, user, volume_id)
+    volume = visible_volume(session, user, volume_id)
     report = session.exec(select(VolumeReport).where(VolumeReport.volume_id == volume_id)).first()
+    try:
+        markdown = report_store.read_text(volume.slug)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read the report: {exc}")
     scope = getattr(user, "_share_scope", None)
     editor = session.get(User, report.updated_by) if report and report.updated_by else None
     return ReportRead(
         volume_id=volume_id,
-        markdown=report.markdown if report else "",
+        markdown=markdown,
         updated_at=_iso(report.updated_at) if report else None,
         updated_by_name=editor.username if editor else None,
         attachments=list_attachments(session, volume_id),
@@ -66,10 +70,15 @@ def put_report(
     volume = session.get(Volume, volume_id)
     if volume is None:
         raise HTTPException(status_code=404, detail="Volume not found")
+    try:
+        report_store.write_text(volume.slug, body.markdown)
+    except UnicodeEncodeError:
+        raise HTTPException(status_code=422, detail="The text is not valid Unicode")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not save the report: {exc}")
     report = session.exec(select(VolumeReport).where(VolumeReport.volume_id == volume_id)).first()
     if report is None:
         report = VolumeReport(volume_id=volume_id)
-    report.markdown = body.markdown
     report.updated_by = editor.id
     report.updated_at = get_utc_now()
     session.add(report)
@@ -120,7 +129,7 @@ def upload_image(
     session.add(image)
     session.flush()
     image.stored_name = f"{image.id}__{workdir.safe_filename(name)}"
-    dest = _volume_dir(volume.slug) / REPORT_DIR / image.stored_name
+    dest = _volume_dir(volume.slug) / image.stored_name
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
@@ -148,7 +157,7 @@ def get_image(
 ):
     volume = visible_volume(session, user, volume_id)
     image = _image(session, volume_id, image_id)
-    path: Path = _volume_dir(volume.slug) / REPORT_DIR / image.stored_name
+    path: Path = _volume_dir(volume.slug) / image.stored_name
     try:
         data = path.read_bytes()
     except OSError:
@@ -168,7 +177,7 @@ def delete_image(
     image = _image(session, volume_id, image_id)
     volume = session.get(Volume, volume_id)
     if volume is not None:
-        (_volume_dir(volume.slug) / REPORT_DIR / image.stored_name).unlink(missing_ok=True)
+        (_volume_dir(volume.slug) / image.stored_name).unlink(missing_ok=True)
     session.delete(image)
     session.commit()
     return {"ok": True}

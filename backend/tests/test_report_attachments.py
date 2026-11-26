@@ -41,7 +41,42 @@ class TestReportText:
         for text in ("one", "two"):
             assert client.put(f"/api/volumes/{volume.id}/report", json={"markdown": text}, headers=auth(editor)).status_code == 200
         rows = db.query(VolumeReport).all()
-        assert len(rows) == 1 and rows[0].markdown == "two"
+        assert len(rows) == 1 and rows[0].updated_by == editor.id
+        assert client.get(f"/api/volumes/{volume.id}/report", headers=auth(editor)).json()["markdown"] == "two"
+
+    def test_the_text_is_a_file_not_a_column(self, client, make_volume, editor, auth, db):
+        volume = make_volume()
+        text = "# Scan\r\n\r\nzaostření \u2013 $E=mc^2$\n"
+        assert client.put(f"/api/volumes/{volume.id}/report", json={"markdown": text}, headers=auth(editor)).status_code == 200
+        path = settings.VOLUMES_DIR / volume.slug / "report" / "report.md"
+        assert path.read_bytes() == text.encode("utf-8")  # as written: no newline translation
+        assert "markdown" not in VolumeReport.__table__.columns
+        assert not list(path.parent.glob(".*.tmp"))
+        # an edit made on disk shows up at once
+        path.write_text("edited on disk", encoding="utf-8")
+        assert client.get(f"/api/volumes/{volume.id}/report", headers=auth(editor)).json()["markdown"] == "edited on disk"
+
+    def test_the_file_goes_with_the_volume_and_sits_beside_the_images(self, client, make_volume, editor, auth):
+        volume = make_volume()
+        client.put(f"/api/volumes/{volume.id}/report", json={"markdown": "x"}, headers=auth(editor))
+        image = client.post(f"/api/volumes/{volume.id}/report/images", files={"file": ("report.md", png())}, headers=auth(editor)).json()
+        folder = settings.VOLUMES_DIR / volume.slug / "report"
+        assert (folder / "report.md").read_text() == "x"  # an image named report.md is stored as <id>__report.md
+        assert (folder / f"{image['id']}__report.md").is_file()
+        client.delete(f"/api/volumes/{volume.id}", headers=auth(editor))
+        assert not folder.exists()
+
+    def test_a_failed_write_keeps_the_old_text(self, client, make_volume, editor, auth, monkeypatch):
+        volume = make_volume()
+        client.put(f"/api/volumes/{volume.id}/report", json={"markdown": "old"}, headers=auth(editor))
+        import os
+        def boom(*a, **k):
+            raise OSError("disk full")
+        monkeypatch.setattr(os, "replace", boom)
+        assert client.put(f"/api/volumes/{volume.id}/report", json={"markdown": "new"}, headers=auth(editor)).status_code == 500
+        monkeypatch.undo()
+        assert client.get(f"/api/volumes/{volume.id}/report", headers=auth(editor)).json()["markdown"] == "old"
+        assert not list((settings.VOLUMES_DIR / volume.slug / "report").glob(".*.tmp"))
 
     def test_readers_cannot_write(self, client, make_volume, reader, auth, db):
         from app.models import VolumeAccess
@@ -250,5 +285,62 @@ class TestAttachments:
         client.post(f"/api/volumes/{volume.id}/report/images", files={"file": ("a.png", png())}, headers=auth(editor))
         report = client.get(f"/api/storage/volume/{volume.id}", headers=auth(editor)).json()
         labels = {part["label"]: part["apparent_bytes"] for part in report["entries"]}
-        assert labels["Attachments"] == 500 and "Report images" in labels
+        assert labels["Attachments"] == 500 and "Report text and images" in labels
         assert not [k for k in labels if k == "Other files"]
+
+
+class TestMovingTheTextOutOfTheDatabase:
+    """Databases made by older versions hold the text in volumereport.markdown (see database._migrate_report_text)."""
+
+    def _old_database(self, tmp_path, rows):
+        from sqlalchemy import create_engine
+        engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+        with engine.begin() as conn:
+            conn.exec_driver_sql("CREATE TABLE volume (id INTEGER PRIMARY KEY, slug TEXT)")
+            conn.exec_driver_sql("INSERT INTO volume (id, slug) VALUES (1, 'vol-a'), (2, 'vol-b'), (3, 'vol-c')")
+            conn.exec_driver_sql(
+                "CREATE TABLE volumereport (id INTEGER PRIMARY KEY, volume_id INTEGER NOT NULL UNIQUE, "
+                "markdown VARCHAR NOT NULL, updated_by INTEGER, updated_at DATETIME)")
+            conn.exec_driver_sql("CREATE INDEX ix_volumereport_volume_id ON volumereport (volume_id)")
+            for volume_id, text in rows:
+                conn.exec_driver_sql("INSERT INTO volumereport (volume_id, markdown, updated_by) VALUES (?, ?, 7)",
+                                     (volume_id, text))
+        return engine
+
+    def _columns(self, engine):
+        with engine.connect() as conn:
+            return {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(volumereport)")}
+
+    def test_texts_become_files_and_the_column_goes(self, tmp_path, monkeypatch):
+        from app import database
+        engine = self._old_database(tmp_path, [(1, "# A\nčau\r\n"), (2, ""), (99, "orphan")])
+        monkeypatch.setattr(database, "engine", engine)
+        database._migrate_report_text()
+        assert (settings.VOLUMES_DIR / "vol-a" / "report" / "report.md").read_bytes() == "# A\nčau\r\n".encode()
+        assert not (settings.VOLUMES_DIR / "vol-b" / "report").exists()  # an empty text makes no file
+        assert self._columns(engine) == {"id", "volume_id", "updated_by", "updated_at"}
+        with engine.connect() as conn:
+            assert conn.exec_driver_sql("SELECT count(*), max(updated_by) FROM volumereport").one() == (3, 7)
+
+    def test_is_idempotent_and_keeps_an_existing_file(self, tmp_path, monkeypatch):
+        from app import database, report_store
+        engine = self._old_database(tmp_path, [(1, "from the database")])
+        monkeypatch.setattr(database, "engine", engine)
+        report_store.write_text("vol-a", "already on disk")
+        database._migrate_report_text()
+        database._migrate_report_text()
+        assert report_store.read_text("vol-a") == "already on disk"
+
+    def test_a_failure_leaves_the_database_untouched(self, tmp_path, monkeypatch):
+        import pytest
+        from app import database, report_store
+        engine = self._old_database(tmp_path, [(1, "keep me")])
+        monkeypatch.setattr(database, "engine", engine)
+        def boom(slug, text):
+            raise OSError("read-only file system")
+        monkeypatch.setattr(report_store, "write_text", boom)
+        with pytest.raises(RuntimeError, match="Nothing was removed"):
+            database._migrate_report_text()
+        assert "markdown" in self._columns(engine)
+        with engine.connect() as conn:
+            assert conn.exec_driver_sql("SELECT markdown FROM volumereport").scalar() == "keep me"

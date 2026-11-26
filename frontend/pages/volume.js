@@ -23,6 +23,7 @@ import { History, bindUndoKeys } from "../js/tf-history.js";
     import { createPlayer } from "../js/playback.js";
     import { createPathStore, createBookmarkStore } from "../js/saved-paths.js";
     import { openBookmarksPanel } from "../js/bookmarks.js";
+    import { openTiffExportDialog } from "../js/tiff-export.js";
     import { interpolatePose, readPose, writePose } from "../js/animate.js";
     import { captureStill } from "../js/render-capture.js";
     import { startBrickCache, watchDataAccess, resetDataAccessWatch, onDataAccessExpired, setDataAccess, dataAccessExpiresAt, dataAccessTtlMs } from "../js/data-access.js";
@@ -43,6 +44,7 @@ import { History, bindUndoKeys } from "../js/tf-history.js";
     const RULER_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17 17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/></svg>`;
     const ANIMATE_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>`;
     const BOOKMARK_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>`;
+    const TIFF_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><path d="M8 7H6M18 7h-2"/></svg>`;
     const REPORT_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>`;
     const LINK_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`;
 
@@ -299,8 +301,9 @@ import { History, bindUndoKeys } from "../js/tf-history.js";
             <button id="measure-btn" class="icon-btn" aria-pressed="false" title="Measure distances: click two points in a slice pane or in the 3D view">${RULER_ICON}<span class="icon-btn-label">Measure</span></button>
             <button id="animate-btn" class="icon-btn" title="Animation timeline: a camera path with clipping and transfer function changes, a 3D turntable or a slice sweep; play it or render a video">${ANIMATE_ICON}<span class="icon-btn-label">Animate</span></button>
             <button id="export-btn" class="icon-btn" title="Save the view or a slice as an image file at full resolution">${DOWNLOAD_ICON}<span class="icon-btn-label">Export</span></button>
+            ${role === "guest" ? "" : `<button id="tiff-btn" class="icon-btn" title="Download all slices as TIFF files in a ZIP (choose the resolution)">${TIFF_ICON}<span class="icon-btn-label">TIFF stack</span></button>`}
             <button id="share-btn" class="icon-btn" title="Copy a link to this exact view">${LINK_ICON}<span class="icon-btn-label">Share</span></button>
-            <button id="report-btn" class="icon-btn" title="Open the report of this volume (text, attachments, TIFF stack download) in a new tab">${REPORT_ICON}<span class="icon-btn-label">Report</span></button>
+            <button id="report-btn" class="icon-btn" title="Open the report of this volume (text and attachments) in a new tab">${REPORT_ICON}<span class="icon-btn-label">Report</span></button>
             ${
               volume.mesh_status === "ready"
                 ? `<button id="view-mesh" class="icon-btn" title="Open the attached mesh in the 3D mesh viewer">${CUBE_ICON}<span class="icon-btn-label">View mesh</span></button>`
@@ -331,7 +334,14 @@ import { History, bindUndoKeys } from "../js/tf-history.js";
 
       $("panel-open").addEventListener("click", () => setPanelOpen(true));
 
-      $("report-btn").addEventListener("click", () => window.open(`/report.html?id=${volume.id}`, "_blank", "noopener"));
+      $("tiff-btn")?.addEventListener("click", () => openTiffExportDialog(volume));
+      $("report-btn").addEventListener("click", () => {
+        // No "noopener" feature here: a tab opened that way starts with an empty sessionStorage, which is where the
+        // sign-in token lives, so the report asked for a login. A plain window.open copies the storage into the new
+        // tab; the opener link is cut afterwards instead.
+        const w = window.open(`/report.html?id=${volume.id}`, "_blank");
+        if (w) { try { w.opener = null; } catch (_) { /* cross-origin: nothing to cut */ } }
+      });
       const fullscreenBtn = $("fullscreen-btn");
       fullscreenBtn.addEventListener("click", () => {
         if (document.fullscreenElement) {

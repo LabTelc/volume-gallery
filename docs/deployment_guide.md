@@ -64,6 +64,6 @@ docker compose up -d
 git pull
 docker compose up -d --build
 ```
-The SQLite schema migrates itself automatically on startup.
+The SQLite schema migrates itself automatically on startup. When upgrading from a version that kept report texts in the database, the first start writes each one to `volumes/<slug>/report/report.md` and then drops the old column. If a file cannot be written (disk full, no permission) the start stops with the database untouched; fix the cause and start again. Back up `gallery.db` before the first start of the new version if you want a way back, since the old version no longer finds its texts afterwards.
 
 *For internal configuration details, see the [Architecture Guide](architecture.md).*

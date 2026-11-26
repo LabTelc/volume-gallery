@@ -1163,3 +1163,58 @@ body.report-editing { overflow: hidden; }
 .layout-switch button + button { border-left: 1px solid var(--line); }
 .layout-switch button:hover { color: var(--text); border-color: var(--line); }
 .layout-switch button[aria-checked="true"] { background: var(--panel-raised); color: var(--accent); }
+
+/* --- report page: the text in the middle of the window, the navigation (chapters etc.) in a column on the right --- */
+.report-layout {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 74rem) 18rem minmax(0, 1fr); column-gap: 2.2em; align-items: start;
+}
+.report-col { grid-column: 2; min-width: 0; }
+.report-col .report-body { font-size: 1.06em; line-height: 1.65; }
+.report-nav { grid-column: 3; grid-row: 1; position: sticky; top: 1.6em; max-width: none; max-height: calc(100vh - 3.2em); overflow-y: auto; font-size: 0.88em; padding-left: 1em; border-left: 1px solid var(--line); }
+.report-nav[hidden] { display: none; }
+.report-nav .nav-title { font-size: 0.78em; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 0.7em; }
+.report-nav .nav-group { margin-bottom: 1.2em; }
+.report-nav .nav-sub { font-size: 0.8em; color: var(--text-dim); margin: 0 0 0.3em; }
+.report-nav a {
+  display: block; padding: 0.28em 0.6em; margin-left: -0.6em; border-left: 2px solid transparent; color: var(--text-dim);
+  text-decoration: none; overflow-wrap: anywhere; line-height: 1.35;
+}
+.report-nav a:hover { color: var(--text); }
+.report-nav a.active { color: var(--accent); border-left-color: var(--accent); }
+.report-nav a.lvl-1 { padding-left: 1.4em; }
+.report-nav a.lvl-2, .report-nav a.lvl-3 { padding-left: 2.2em; font-size: 0.95em; }
+.report-body h1, .report-body h2, .report-body h3, .report-body h4, #attachments-section { scroll-margin-top: 1em; }
+.report-body { max-width: none; }
+@media (max-width: 1250px) {
+  /* not enough room for a column: the navigation moves above the text */
+  .report-layout { grid-template-columns: minmax(0, 1fr); }
+  .report-col { grid-column: 1; grid-row: 2; }
+  .report-nav { grid-column: 1; grid-row: 1; position: static; max-width: none; max-height: 14em; margin-bottom: 1.2em; padding: 0.6em 0.9em; border: 1px solid var(--line); border-radius: var(--radius); }
+}
+
+/* report page, like a wiki page: title + author on top, the text, and a side panel with chapters, export and page info */
+.report-head { align-items: flex-start; padding-bottom: 1em; border-bottom: 1px solid var(--line); margin-bottom: 1.6em; }
+.report-head h1 { font-size: 2.1em; line-height: 1.15; overflow-wrap: anywhere; }
+.report-head .report-author { margin: 0.25em 0 0; font-size: 1.05em; }
+.report-nav { background: var(--panel); border: none; border-radius: var(--radius); padding: 1.2em 1.1em; }
+.report-nav .nav-group { margin-bottom: 1.6em; padding-left: 0; }
+.report-nav .nav-export { display: flex; align-items: center; gap: 0.6em; margin: 0 0 1.6em; }
+.report-nav .nav-export button { display: inline-flex; align-items: center; gap: 0.4em; padding: 0.4em 0.8em; font-size: 0.9em; }
+.report-nav .nav-info { display: inline-flex; color: var(--text-dim); cursor: help; }
+.report-nav .page-info { margin: 0; font-size: 0.9em; }
+.report-nav .page-info dt { color: var(--text-dim); margin-top: 0.8em; }
+.report-nav .page-info dd { margin: 0.1em 0 0 0.8em; font-size: 0.92em; color: var(--text-dim); }
+.re-drawer .bm-thumb { width: 72px; height: 40px; flex-shrink: 0; background: var(--panel-raised); border-radius: 3px; overflow: hidden; display: flex; align-items: center; justify-content: center; font-size: 0.7em; color: var(--text-dim); }
+.re-drawer .bm-thumb img { width: 100%; height: 100%; object-fit: cover; }
+@media (max-width: 1250px) { .report-nav { max-width: none; } }
+
+/* gallery layout switch: same height as the selects next to it (the pseudo-element is a one-line strut) */
+.layout-switch button { padding: 0.5em 0.7em; line-height: normal; }
+.layout-switch button::before { content: "\200b"; }
+.layout-switch svg { display: block; width: 1.1em; height: 1.1em; }
+/* a table cell that holds buttons / selects / text: keep it a real cell, so everything in the row lines up */
+@media (min-width: 801px) {
+  td.row-actions { display: table-cell; vertical-align: middle; }
+  td.row-actions > * { vertical-align: middle; margin: 0.15em 0.4em 0.15em 0; }
+}
+td { vertical-align: middle; }

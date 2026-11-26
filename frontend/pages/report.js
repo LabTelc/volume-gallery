@@ -8,7 +8,6 @@ import { pageHint } from "../js/help.js";
 import { renderMarkdown } from "../js/report-markdown.js";
 import { wrapSelection, prefixLines, insertText, insertDisplayMath, imageMarkdown } from "../js/markdown-edit.js";
 import { buildAnchors, mapScroll } from "../js/scroll-sync.js";
-import { openTiffExportDialog } from "../js/tiff-export.js";
 
 requireLogin();
 const role = getRole();
@@ -19,18 +18,23 @@ if (!volumeId) window.location.href = "/index.html";
 
 document.getElementById("shell").innerHTML = `
   ${renderShell("gallery", role, getUsername())}
-  <main>
-    <div class="toolbar">
-      <div>
-        <h1 id="title">Report</h1>
-        <p class="subtitle" id="subtitle"></p>
+  <main class="report-page">
+    <div class="report-layout">
+      <div class="report-col">
+        <div class="toolbar report-head">
+          <div>
+            <h1 id="title">Report</h1>
+            <p class="subtitle report-author" id="subtitle"></p>
+          </div>
+          <div class="report-actions" id="top-actions"></div>
+        </div>
+        ${pageHint("report", role)}
+        <div id="error" style="display:none" class="error-box"></div>
+        <section id="report-section" class="report-section"></section>
+        <section class="report-section" id="attachments-section"></section>
       </div>
-      <div class="report-actions" id="top-actions"></div>
+      <aside class="report-nav" id="report-nav" aria-label="Report navigation" hidden></aside>
     </div>
-    ${pageHint("report", role)}
-    <div id="error" style="display:none" class="error-box"></div>
-    <section id="report-section" class="report-section"></section>
-    <section class="report-section" id="attachments-section"></section>
   </main>
 `;
 wireLogout();
@@ -68,21 +72,19 @@ function hydrateImages(root) {
 
 // -------------------------------------------------------------------------------------------- the top
 
+// The author of the page: whoever added the volume (the server sends created_by_name when the reader may see it).
+const authorOf = (v) => v.created_by_name || v.author_name || "";
+const fmtTime = (iso) => { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleString() : ""; };
+
 function renderTop() {
   const v = state.volume;
   $("title").textContent = v.title;
   document.title = `${v.title} \u2014 Report`;
-  const meta = [];
-  if (state.report.updated_at) {
-    meta.push(`Report updated ${new Date(state.report.updated_at).toLocaleDateString()}${state.report.updated_by_name && isEditor ? ` by ${state.report.updated_by_name}` : ""}`);
-  }
-  $("subtitle").textContent = meta.join(" \u00b7 ");
+  $("subtitle").textContent = authorOf(v);
   const buttons = [];
   if (v.status === "ready") buttons.push(`<a href="/viewers/volume.html?id=${v.id}"><button type="button">Open viewer</button></a>`);
-  if (v.status === "ready" && !isGuest) buttons.push(`<button type="button" id="tiff-btn" title="Prepare all slices as TIFF files in a ZIP">Download as TIFF stack</button>`);
   if (isEditor && !state.editing) buttons.push(`<button type="button" class="primary" id="edit-btn">Edit report</button>`);
   $("top-actions").innerHTML = buttons.join("");
-  $("tiff-btn")?.addEventListener("click", () => openTiffExportDialog(v));
   $("edit-btn")?.addEventListener("click", startEditing);
 }
 
@@ -94,8 +96,85 @@ function renderReading() {
     ? `<div class="report-body" id="report-body">${renderMarkdown(text)}</div>`
     : `<p class="dim">${isEditor ? "There is no report for this volume yet. Press <strong>Edit report</strong> to write one: text, images and formulas." : "There is no report for this volume."}</p>`;
   const body = $("report-body");
-  if (body) hydrateImages(body);
+  if (body) { hydrateImages(body); giveHeadingsIds(body); }
+  renderNav();
 }
+
+// ------------------------------------------------------------------------ navigation column (right)
+
+// The headings of the text get ids, so the navigation can link to them.
+function giveHeadingsIds(root) {
+  const used = new Set();
+  root.querySelectorAll("h1, h2, h3, h4").forEach((h, i) => {
+    let base = h.textContent.trim().toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `section-${i + 1}`;
+    let id = `ch-${base}`;
+    for (let n = 2; used.has(id); n++) id = `ch-${base}-${n}`;
+    used.add(id);
+    h.id = id;
+  });
+}
+
+const PRINT_ICON = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>`;
+const INFO_ICON = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>`;
+let spy = null;
+
+// Chapters (the headings of the text, indented by level), then Attachments. The entry of the chapter being read
+// is highlighted while the page scrolls.
+function renderNav() {
+  const nav = $("report-nav");
+  if (!nav) return;
+  spy?.disconnect();
+  const heads = [...document.querySelectorAll("#report-body h1, #report-body h2, #report-body h3, #report-body h4")];
+  const top = heads.length ? Math.min(...heads.map((h) => Number(h.tagName[1]))) : 1;
+  const links = heads.map((h) =>
+    `<a href="#${h.id}" data-target="${h.id}" class="lvl-${Math.min(3, Number(h.tagName[1]) - top)}">${escapeHtml(h.textContent.trim())}</a>`);
+  const n = state.report?.attachments?.length ?? 0;
+  const extra = `<a href="#attachments-section" data-target="attachments-section" class="lvl-0 nav-extra">Attachments${n ? ` <span class="dim">(${n})</span>` : ""}</a>`;
+  const v = state.volume || {};
+  const created = fmtTime(v.created_at);
+  const modified = fmtTime(state.report?.updated_at || v.updated_at);
+  const modifiedBy = isEditor && state.report?.updated_by_name ? ` \u00b7 ${escapeHtml(state.report.updated_by_name)}` : "";
+  nav.hidden = false;
+  nav.innerHTML = `
+    <div class="nav-title">On this page</div>
+    <div class="nav-group">${links.join("")}${extra}</div>
+    <div class="nav-export">
+      <button type="button" class="primary" id="export-pdf-btn">${PRINT_ICON}<span>Export to PDF</span></button>
+      <span class="nav-info" title="Export of the report to PDF is not available yet" aria-label="Export of the report to PDF is not available yet">${INFO_ICON}</span>
+    </div>
+    <div class="nav-title">Page info</div>
+    <dl class="page-info">
+      ${created ? `<dt>Created</dt><dd>${escapeHtml(created)}</dd>` : ""}
+      ${modified ? `<dt>Last modified</dt><dd>${escapeHtml(modified)}${modifiedBy}</dd>` : ""}
+    </dl>`;
+  // (the Export to PDF button does nothing yet)
+
+  const targets = [...heads, $("attachments-section")].filter(Boolean);
+  const visible = new Set();
+  const mark = () => {
+    // the first target that is on screen (or, when none is, the last one above the top of the screen)
+    let current = targets.find((t) => visible.has(t));
+    if (!current) current = [...targets].reverse().find((t) => t.getBoundingClientRect().top < 0) || targets[0];
+    nav.querySelectorAll("a").forEach((a) => a.classList.toggle("active", a.dataset.target === current?.id));
+  };
+  spy = new IntersectionObserver((entries) => {
+    for (const e of entries) e.isIntersecting ? visible.add(e.target) : visible.delete(e.target);
+    mark();
+  }, { rootMargin: "0px 0px -65% 0px" });
+  targets.forEach((t) => spy.observe(t));
+  mark();
+}
+
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("#report-nav a[data-target]");
+  if (!a) return;
+  e.preventDefault();
+  const el = document.getElementById(a.dataset.target);
+  if (!el) return;
+  el.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+  history.replaceState(null, "", `#${a.dataset.target}`);
+});
 
 // -------------------------------------------------------------------------------------- editing the text
 
@@ -123,7 +202,7 @@ const TOOLS = [
 // and Cancel, the formatting toolbar, and below it the text and its preview side by side, two panes of the same
 // size that each scroll on their own and follow each other (js/scroll-sync.js). Images of the report and a short
 // markdown help open in a drawer under the toolbar.
-const HELP_HTML = `<p class="dim report-help">Markdown: <code># heading</code>, <code>**bold**</code>, <code>*italic*</code>, lists, <code>&gt; quote</code>, tables, <code>[text](https://\u2026)</code>. Formulas are LaTeX: <code>$a^2+b^2=c^2$</code> in a line, <code>$$ \u2026 $$</code> on lines of their own. Images: <code>![caption](img:12)</code> (the Image\u2026 button adds one). Raw HTML is not shown. Ctrl+S saves.</p>`;
+const HELP_HTML = `<p class="dim report-help">Markdown: <code># heading</code>, <code>**bold**</code>, <code>*italic*</code>, lists, <code>&gt; quote</code>, tables, <code>[text](https://\u2026)</code>. Formulas are LaTeX: <code>$a^2+b^2=c^2$</code> in a line, <code>$$ \u2026 $$</code> on lines of their own. Images: <code>![caption](img:12)</code> (the Image\u2026 button adds one). A link to a saved view of the volume: the Bookmark\u2026 button. Raw HTML is not shown. Ctrl+S saves.</p>`;
 
 async function startEditing() {
   state.editing = true;
@@ -154,6 +233,7 @@ async function startEditing() {
       <button type="button" id="image-btn" title="Add an image to the text">Image\u2026</button>
       <input type="file" id="image-input" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
       <span class="grow"></span>
+      <button type="button" id="bookmark-btn" data-drawer="bookmarks" aria-expanded="false" title="Add a link to a saved view (bookmark) of this volume">Bookmark\u2026</button>
       <button type="button" data-drawer="images" aria-expanded="false">Images (<span id="image-count"></span>)</button>
       <button type="button" data-drawer="help" aria-expanded="false">Help</button>
     </div>
@@ -276,6 +356,7 @@ async function startEditing() {
     overlay.querySelectorAll("[data-drawer]").forEach((b) => b.setAttribute("aria-expanded", String(b.dataset.drawer === drawer)));
     if (drawer === "help") drawerEl.innerHTML = HELP_HTML;
     if (drawer === "images") renderImageList();
+    if (drawer === "bookmarks") renderBookmarkList();
   };
   overlay.querySelectorAll("[data-drawer]").forEach((b) => b.addEventListener("click", () => showDrawer(b.dataset.drawer)));
   state.refreshImages = () => { $("image-count").textContent = String(state.images.length); if (drawer === "images") renderImageList(); };
@@ -343,6 +424,30 @@ async function startEditing() {
   area.focus();
 }
 
+// Bookmarks saved "for everyone" in the viewer have a link that opens the viewer on that view; the drawer lists them and
+// puts such a link into the text. (A bookmark kept only in one browser cannot be linked to.)
+async function renderBookmarkList() {
+  const box = $("re-drawer");
+  if (!box) return;
+  box.innerHTML = `<p class="dim">Loading bookmarks\u2026</p>`;
+  let list = [];
+  try {
+    state.bookmarks = list = await api.listVolumeBookmarks(volumeId);
+  } catch (err) {
+    box.innerHTML = `<p class="dim">Could not load the bookmarks: ${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  box.innerHTML = (list.length ? list.map((b) => `
+      <div class="image-row" data-bookmark="${b.id}">
+        <span class="bm-thumb">${b.spec?.thumb ? `<img src="${escapeHtml(b.spec.thumb)}" alt="" />` : "<span>no picture</span>"}</span>
+        <span class="grow">${escapeHtml(b.name)}${b.created_by_name ? ` <span class="dim">\u00b7 ${escapeHtml(b.created_by_name)}</span>` : ""}</span>
+        <button type="button" data-insert-bookmark="${b.id}" title="Insert a link to this view at the cursor">Insert link</button>
+      </div>`).join("")
+    : `<p class="dim">This volume has no bookmarks for everyone yet.</p>`) +
+    `<p class="dim report-help">Bookmarks are made in the viewer: <strong>Bookmarks \u2192 Save for everyone</strong>. ` +
+    `<a href="/viewers/volume.html?id=${volumeId}" target="_blank">Open the viewer</a>. Reload this list with the Bookmark button.</p>`;
+}
+
 function renderImageList() {
   const box = $("re-drawer");
   if (!box) return;
@@ -356,6 +461,22 @@ function renderImageList() {
         </div>`).join("")
     : `<p class="dim">No images yet. Use <strong>Image\u2026</strong>, or drop or paste one into the text.</p>`;
 }
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-insert-bookmark]");
+  const area = $("md-text");
+  if (!btn || !area) return;
+  const b = (state.bookmarks || []).find((x) => x.id === Number(btn.dataset.insertBookmark));
+  if (!b) return;
+  const label = b.name.replace(/[\[\]\\]/g, "");
+  const link = `[${label}](/viewers/volume.html?id=${volumeId}&bookmark=${b.id})`;
+  const sel = area.value.slice(area.selectionStart, area.selectionEnd);
+  const edit = insertText(area.value, area.selectionStart, area.selectionEnd, sel ? link.replace(`[${label}]`, `[${sel}]`) : link);
+  area.value = edit.value;
+  area.focus();
+  area.setSelectionRange(edit.selStart, edit.selEnd);
+  area.dispatchEvent(new Event("input"));
+});
 
 document.addEventListener("click", async (e) => {
   const insert = e.target.closest("[data-insert]");
@@ -415,6 +536,7 @@ function renderAttachments() {
         <input type="file" id="attach-input" multiple hidden />
         <span class="dim" id="attach-note"></span>
       </div>` : ""}`;
+  renderNav();
   $("attach-btn")?.addEventListener("click", () => $("attach-input").click());
   $("attach-input")?.addEventListener("change", async (e) => {
     const files = [...e.target.files];

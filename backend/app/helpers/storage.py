@@ -130,7 +130,7 @@ def classifier_for(asset_type: str, thumbnail_name: Optional[str] = None) -> Cla
             if rel.startswith("attachments/"):
                 return "attachments", "Attachments"
             if rel.startswith("report/"):
-                return "report", "Report images"
+                return "report", "Report text and images"
             if rel.startswith("exports/"):
                 return "exports", "TIFF stacks and other results"
             return "other", "Other files"

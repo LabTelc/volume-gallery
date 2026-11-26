@@ -221,10 +221,10 @@ class VolumeAttachment(SQLModel, table=True):
 
 
 class VolumeReport(SQLModel, table=True):
-    """The markdown text of a volume's report page (one row per volume, made when the first text is saved)."""
+    """Who saved a volume's report text last, and when (one row per volume, made when the first text is saved). The
+    markdown itself is the file <volumes>/<slug>/report/report.md (see report_store.py), not a column."""
     id: Optional[int] = Field(default=None, primary_key=True)
     volume_id: int = Field(foreign_key="volume.id", unique=True, index=True)
-    markdown: str = Field(default="")
     updated_by: Optional[int] = Field(default=None, foreign_key="user.id")
     updated_at: datetime = Field(default_factory=get_utc_now, sa_type=DateTime(timezone=True))
 
