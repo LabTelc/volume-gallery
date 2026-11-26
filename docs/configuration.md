@@ -46,6 +46,11 @@ application, **worker** = the conversion worker, **nginx** = the reverse proxy.
 | `VG_SLICE_ZSTD_LEVEL` | `1` | app | zstd level for planes sent to the browser (1 = fastest). |
 | `VG_HISTOGRAM_THREADS` | empty (= smaller of 4 and the CPU count) | app, worker | Threads used to compute histograms. |
 | `VG_HISTOGRAM_BACKFILL` | `1` | app | Compute missing histograms of existing volumes in the background at start-up (`0` turns it off). |
+| `VG_EXPORT_RETENTION_HOURS` | `24` | app, worker | How long a finished TIFF stack (a ZIP) is kept for download before it is deleted, in hours (fractions are fine). The Processing page shows the time left. |
+| `VG_EXPORT_MAX_GB` | `0` (no limit) | app | Largest TIFF stack that may be requested, in GB of voxel data. Levels over it are shown as unavailable; the coarser ones stay. |
+| `VG_EXPORT_THREADS` | empty (= smaller of 4 and the CPU count) | app, worker | Threads that decode bricks while a TIFF stack is made. A stack holds about 64 slices in RAM at a time (64 x width x height x bytes per voxel; 0.5 GB for a 2000 x 2000 x 16-bit level). |
+| `VG_TASK_MAX_ACTIVE_PER_USER` | `3` | app | Tasks one reader may have waiting or running at once (editors and administrators are not limited; `0` = no limit). |
+| `VG_REPORT_IMAGE_MAX_MB` | `20` | app | Largest image that may be added to a report, in MB. |
 
 ## Fixed inside the image
 

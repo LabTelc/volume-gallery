@@ -571,6 +571,12 @@ class VolumeSlicesKiln:
         raw_bytes = os.pread(self._fd, size, int(entry["offset"]))
         return self._decode_brick_core(raw_bytes)
 
+    def read_brick_core(self, bx: int, by: int, bz: int) -> Optional[np.ndarray]:
+        """The core of one brick (brick_size^3 voxels, in (z, y, x) order, in the dtype the volume was stored with),
+        or None when the brick is empty (all zero). Voxels past the end of the volume are whatever the store holds
+        there. Used to write a level out whole (helpers/tiff_export.py)."""
+        return self._read_brick_core(bx, by, bz)
+
     def _read_brick_xy_plane(self, bx: int, by: int, bz: int, local_z: int) -> Optional[np.ndarray]:
         """Fast-path for XY _read_direct across both tiled66 (LOD 0) and z_sync (LOD > 0)."""
         if self._subidx is not None and self._compressed:

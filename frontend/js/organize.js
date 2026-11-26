@@ -115,7 +115,7 @@ export async function saveDetailsForm(api, kind, item, p = "details") {
 
 // ---------------------------------------------------------------------------------- dialogs
 
-function openModal(html, { className = "" } = {}) {
+export function openModal(html, { className = "" } = {}) {
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
   backdrop.innerHTML = `<div class="modal ${className}" role="dialog" aria-modal="true">${html}</div>`;

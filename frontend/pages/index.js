@@ -160,6 +160,7 @@ function renderRow(v, { showPath = false } = {}) {
       </div>
       <div class="actions">
         ${viewable ? `<a href="/viewers/${v.asset_type}.html?id=${v.id}"><button>Open</button></a>` : ""}
+        ${viewable && v.asset_type === "volume" ? `<a href="/report.html?id=${v.id}"><button title="Report, attachments and downloads of this volume">Report</button></a>` : ""}
         ${isEditor ? `<button data-edit="${v.id}" data-kind="${v.asset_type}">Edit</button>` : ""}
         ${isEditor ? `<button data-manage="${v.id}" data-kind="${v.asset_type}">Manage</button>` : ""}
       </div>

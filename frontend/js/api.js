@@ -122,6 +122,7 @@ const NAV_ICONS = {
   audit: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`,
   help: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/></svg>`,
   shares: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
+  processing: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y=\"4\" width=\"16\" height=\"16\" rx=\"2\"/><rect x=\"9\" y=\"9\" width=\"6\" height=\"6\"/><path d=\"M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3\"/></svg>`,
   account: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
 };
 
@@ -360,6 +361,7 @@ const _STAGED_FIELDS = {
     tiff_files: ["volume", "tiff_upload_manifest", true],
     mesh_file: ["mesh", "mesh_upload_id"],
     pointcloud_file: ["pointcloud", "pointcloud_upload_id"],
+    attachment_file: ["attachment", "attachment_upload_id"],
 };
 const _IDS_PER_FIELD = 500;  // ~35 KB a field, far below Starlette's 1 MB limit on a form field
 const _STAGE_CONCURRENCY = 6;  // only matters for stacks of many small slice files (6 = a browser's connections per host over HTTP/1.1)
@@ -764,6 +766,90 @@ export const api = {
         return request(`/api/pointclouds/${id}/access/${userId}`, {method: "DELETE"});
     },
 
+    // the report page of a volume. Reading: anybody who can see the volume; writing: editor / admin.
+    // getReport resolves with {markdown, updated_at, updated_by_name, attachments, can_download}.
+    getReport(volumeId) {
+        return request(`/api/volumes/${volumeId}/report`);
+    },
+    saveReport(volumeId, markdown) {
+        return request(`/api/volumes/${volumeId}/report`, {
+            method: "PUT",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({markdown}),
+        });
+    },
+    listReportImages(volumeId) {
+        return request(`/api/volumes/${volumeId}/report/images`);
+    },
+    uploadReportImage(volumeId, file) {
+        const fd = new FormData();
+        fd.append("file", file);
+        return request(`/api/volumes/${volumeId}/report/images`, {method: "POST", body: fd});
+    },
+    deleteReportImage(volumeId, imageId) {
+        return request(`/api/volumes/${volumeId}/report/images/${imageId}`, {method: "DELETE"});
+    },
+    // A report's image, as a blob: URL (an <img> cannot send the Authorization header). Null when it cannot be read.
+    async reportImageUrl(volumeId, imageId) {
+        try {
+            const res = await request(`/api/volumes/${volumeId}/report/images/${imageId}`);
+            return URL.createObjectURL(await res.blob());
+        } catch (_) {
+            return null;
+        }
+    },
+
+    // files attached to a volume. One file per call; `onProgress` gets the share (0..1) sent so far.
+    listAttachments(volumeId) {
+        return request(`/api/volumes/${volumeId}/attachments`);
+    },
+    uploadAttachment(volumeId, file, description, onProgress) {
+        const fd = new FormData();
+        fd.append("attachment_file", file);
+        fd.append("description", description || "");
+        return _uploadWithProgress(`/api/volumes/${volumeId}/attachments`, fd, onProgress);
+    },
+    updateAttachment(volumeId, attachmentId, payload) {
+        return request(`/api/volumes/${volumeId}/attachments/${attachmentId}`, {
+            method: "PATCH",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(payload),
+        });
+    },
+    deleteAttachment(volumeId, attachmentId) {
+        return request(`/api/volumes/${volumeId}/attachments/${attachmentId}`, {method: "DELETE"});
+    },
+    attachmentAccessUrl(volumeId, attachmentId) {
+        return request(`/api/volumes/${volumeId}/attachments/${attachmentId}/download-url`);
+    },
+
+    // processing tasks (the Processing page). A task is {id, kind, volume_id, volume_title, params, status
+    // (queued | running | ready | failed | expired), progress_done, progress_total, result_bytes, expires_at, ...}.
+    listTasks() {
+        return request("/api/processing/tasks");
+    },
+    getTask(id) {
+        return request(`/api/processing/tasks/${id}`);
+    },
+    deleteTask(id) {
+        return request(`/api/processing/tasks/${id}`, {method: "DELETE"});
+    },
+    taskAccessUrl(id) {
+        return request(`/api/processing/tasks/${id}/download-url`);
+    },
+    // TIFF stacks: the levels a volume can be exported at, and asking for one (resolves with the task; when the
+    // same stack is already being made or kept, that task)
+    tiffExportOptions(volumeId) {
+        return request(`/api/processing/tiff-export/${volumeId}`);
+    },
+    requestTiffExport(volumeId, level) {
+        return request(`/api/processing/tiff-export/${volumeId}`, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({level}),
+        });
+    },
+
     // users (admin)
     listUsers() {
         return request("/api/users");
@@ -802,6 +888,14 @@ export const api = {
         return publicPost("/api/auth/set-password", {token, password});
     },
 };
+
+// Starts the download behind an access URL the server handed out (api.attachmentAccessUrl, api.taskAccessUrl, ...).
+// The browser saves the file under the name the server gives it; the page stays where it is.
+export function startDownload(access) {
+    const target = safeUrl(access && access.url);
+    if (!target) throw new Error("The server returned an invalid download link.");
+    window.location.href = target;
+}
 
 // The link to hand to a user (the token is in the fragment: it is not sent to the server by the browser,
 // so it stays out of access logs and referrers).
@@ -886,6 +980,7 @@ export function renderShell(activePage, role, username) {
         if (role === "editor" || role === "admin") {
             navItems.push({href: "/upload.html", label: "Upload", key: "upload"});
         }
+        navItems.push({href: "/processing.html", label: "Processing", key: "processing"});
         if (role === "admin") {
             navItems.push({href: "/admin.html", label: "Users", key: "admin"});
             navItems.push({href: "/shares.html", label: "Shares", key: "shares"});

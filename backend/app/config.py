@@ -75,6 +75,21 @@ class Settings:
     # zstd level for planes sent to browsers that accept it (1 = fastest)
     SLICE_ZSTD_LEVEL: int = int(os.environ.get("VG_SLICE_ZSTD_LEVEL", "1"))
 
+    # --- Processing tasks (TIFF stacks, see processing.py) ---
+    # How long a finished result (the ZIP of a TIFF stack) is kept for download before it is deleted, in hours.
+    EXPORT_RETENTION_HOURS: float = float(os.environ.get("VG_EXPORT_RETENTION_HOURS") or "24")
+    # Largest TIFF stack that may be requested, in GB of voxel data (0 = no limit). The coarser levels of a
+    # volume stay available when the finest is over the limit.
+    EXPORT_MAX_GB: float = float(os.environ.get("VG_EXPORT_MAX_GB") or "0")
+    # Threads that decode bricks while a TIFF stack is prepared (empty = the smaller of 4 and the CPU count).
+    EXPORT_THREADS: int = int(os.environ.get("VG_EXPORT_THREADS") or min(4, os.cpu_count() or 2))
+    # Tasks one reader may have queued or running at the same time (editors and admins are not limited; 0 = no limit).
+    TASK_MAX_ACTIVE_PER_USER: int = int(os.environ.get("VG_TASK_MAX_ACTIVE_PER_USER") or "3")
+
+    # --- Dataset reports ---
+    # Largest image that may be added to a report, in MB.
+    REPORT_IMAGE_MAX_MB: int = int(os.environ.get("VG_REPORT_IMAGE_MAX_MB") or "20")
+
     # --- External processing tools ---
     # These binaries are NOT bundled with this app — see README's "Meshes and
     # point clouds" section. Point these at wherever you've placed them

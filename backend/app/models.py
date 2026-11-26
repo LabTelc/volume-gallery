@@ -201,3 +201,80 @@ class ShareView(SQLModel, table=True):
         sa_type=DateTime(timezone=True),
         index=True,
     )
+
+
+# ---------- dataset report page: attachments and images ----------
+
+class VolumeAttachment(SQLModel, table=True):
+    """A file an editor attached to a volume (a PDF report, raw data, a calibration file, ...). Everybody who can
+    see the volume sees the list; downloading follows the same rules as downloading a mesh. The file lives in
+    <volumes>/<slug>/attachments/<stored_name>."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    volume_id: int = Field(foreign_key="volume.id", index=True)
+    filename: str                      # the name shown, and the name the browser saves it under
+    stored_name: str                   # the file's name on disk (<id>__<safe filename>)
+    size: int = 0
+    content_type: str = ""             # as the browser reported it; informational only, downloads are always octet-stream
+    description: str = ""
+    created_by: Optional[int] = Field(default=None, foreign_key="user.id")
+    created_at: datetime = Field(default_factory=get_utc_now, sa_type=DateTime(timezone=True))
+
+
+class VolumeReport(SQLModel, table=True):
+    """The markdown text of a volume's report page (one row per volume, made when the first text is saved)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    volume_id: int = Field(foreign_key="volume.id", unique=True, index=True)
+    markdown: str = Field(default="")
+    updated_by: Optional[int] = Field(default=None, foreign_key="user.id")
+    updated_at: datetime = Field(default_factory=get_utc_now, sa_type=DateTime(timezone=True))
+
+
+class ReportImage(SQLModel, table=True):
+    """An image used in a report's text (written as ![caption](img:<id>)). Lives in <volumes>/<slug>/report/<stored_name>."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    volume_id: int = Field(foreign_key="volume.id", index=True)
+    filename: str
+    stored_name: str
+    content_type: str                  # detected from the file itself, never taken from the upload
+    size: int = 0
+    created_by: Optional[int] = Field(default=None, foreign_key="user.id")
+    created_at: datetime = Field(default_factory=get_utc_now, sa_type=DateTime(timezone=True))
+
+
+# ---------- processing tasks ----------
+
+class TaskStatus(str, enum.Enum):
+    queued = "queued"
+    running = "running"
+    ready = "ready"
+    failed = "failed"
+    expired = "expired"      # it finished, and its result has been deleted after VG_EXPORT_RETENTION_HOURS
+
+
+class ProcessingTask(SQLModel, table=True):
+    """Work done on a volume in the background whose result is a file to download (see processing.py). `kind` names
+    what is done (\"tiff_export\" is the only one so far), `params` holds its settings as JSON. The title and slug of the
+    volume are copied in, so a line stays readable in the list while the volume is renamed."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    kind: str = Field(index=True)
+    volume_id: int = Field(index=True)
+    volume_slug: str = ""
+    volume_title: str = ""
+    params: str = Field(default="{}")
+    status: TaskStatus = Field(default=TaskStatus.queued, index=True)
+    status_log: str = Field(default="")
+    progress_done: int = 0
+    progress_total: int = 0
+    result_name: Optional[str] = None      # file name inside <volumes>/<slug>/exports/ while the result exists
+    download_name: Optional[str] = None    # the name the browser saves it under
+    result_bytes: Optional[int] = None
+    created_by: Optional[int] = Field(default=None, foreign_key="user.id")
+    created_at: datetime = Field(default_factory=get_utc_now, sa_type=DateTime(timezone=True))
+    started_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    finished_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    expires_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+
+    def queue_failed(self, message: str) -> None:
+        """Called by jobs.dispatch when the job could not be queued."""
+        self.status = TaskStatus.failed
+        self.status_log = (self.status_log or "") + f"{message}\n"

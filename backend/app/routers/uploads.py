@@ -1,10 +1,10 @@
 """Raw-body uploads: the browser sends each big file as the body of
 
-    PUT /api/uploads/<volume|mesh|pointcloud>?name=<file name>
+    PUT /api/uploads/<volume|mesh|pointcloud|attachment>?name=<file name>
 
 and gets back an upload id, which the create request (POST /api/volumes, /api/meshes,
-/api/pointclouds) then names instead of re-sending the file (tiff_upload_id,
-tiff_upload_manifest, mesh_upload_id, pointcloud_upload_id). A stack's slice ids go in
+/api/pointclouds, POST /api/volumes/<id>/attachments) then names instead of re-sending the file (tiff_upload_id,
+tiff_upload_manifest, mesh_upload_id, pointcloud_upload_id, attachment_upload_id). A stack's slice ids go in
 chunks of JSON arrays: one form field per slice would hit Starlette's limit of 1000
 fields per multipart form. The multipart form fields keep
 working too, for curl and for a bare uvicorn without nginx.
@@ -37,7 +37,7 @@ def check_upload_auth(_: User = Depends(require_editor)) -> Response:
 
 @router.put("/{kind}")
 async def stage_upload(
-    kind: Literal["volume", "mesh", "pointcloud"],
+    kind: Literal["volume", "mesh", "pointcloud", "attachment"],
     request: Request,
     name: str = Query(..., min_length=1, max_length=255, description="Original file name"),
     editor: User = Depends(require_editor),

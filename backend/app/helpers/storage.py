@@ -127,6 +127,12 @@ def classifier_for(asset_type: str, thumbnail_name: Optional[str] = None) -> Cla
                 return "indexes", "Brick indexes"
             if rel in _VOLUME_META:
                 return "metadata", "Metadata and histogram"
+            if rel.startswith("attachments/"):
+                return "attachments", "Attachments"
+            if rel.startswith("report/"):
+                return "report", "Report images"
+            if rel.startswith("exports/"):
+                return "exports", "TIFF stacks and other results"
             return "other", "Other files"
         return classify
     if asset_type == "mesh":

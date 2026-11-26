@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 
 from ..database import get_session, engine
 from ..models import User, Role, Volume, VolumeAccess, Mesh, AssetStatus, AnimationPath, ViewBookmark
+from ..models import VolumeAttachment, VolumeReport, ReportImage, ProcessingTask
 from ..schemas import VolumeRead, AssetStatusRead, AssetUpdate, AccessGrant, FileAccessUrl, UserRead
 from ..deps import file_token_revoked, get_current_user, require_editor
 from ..security import create_file_token, decode_token
@@ -527,6 +528,11 @@ def delete_volume(
         session.delete(saved)
     for saved in session.exec(select(ViewBookmark).where(ViewBookmark.volume_id == volume_id)).all():
         session.delete(saved)
+    # the report page, its attachments and images (their files went with the folder) and the processing tasks
+    # (a task that is still running notices that its row is gone and stops)
+    for model in (VolumeAttachment, VolumeReport, ReportImage, ProcessingTask):
+        for row in session.exec(select(model).where(model.volume_id == volume_id)).all():
+            session.delete(row)
     audit.record(session, request, editor, "volume.delete", "volume", volume.id, volume.slug, title=volume.title)
     session.delete(volume)
     session.commit()

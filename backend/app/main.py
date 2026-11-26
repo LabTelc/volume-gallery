@@ -12,9 +12,10 @@ from .database import init_db, engine
 from .models import User, Role, Volume, Mesh, PointCloud, AssetStatus
 from .security import hash_password
 from .config import settings, check_secret_key
-from . import audit, workdir, jobs
+from . import audit, workdir, jobs, processing
 from .utils import _now
 from .routers import auth, users, volumes, meshes, pointclouds, branding, shares, uploads, folders, paths, bookmarks, admin
+from .routers import attachments, reports, processing as processing_router
 
 
 def _bootstrap_admin():
@@ -67,6 +68,7 @@ def _recover_interrupted_jobs():
                 elif asset.status == AssetStatus.uploaded:
                     keep.add((kind, asset.slug))
         session.commit()
+    processing.recover_interrupted(jobs.live_task_ids() if jobs.enabled() else set())
     workdir.clear_stale(keep, clear_tmp=not jobs.enabled())  # the web process spools uploads in .tmp
     workdir.sweep_staging()  # staged uploads (see routers/uploads.py) that nobody claimed
 
@@ -82,6 +84,8 @@ async def lifespan(app: FastAPI):
         _recover_interrupted_jobs()
     else:
         workdir.sweep_staging()
+    processing.cleanup_expired()  # results whose retention ran out while the server was off
+    processing.start_cleanup_thread()
     if settings.HISTOGRAM_BACKFILL:  # not on the startup path: a big volume can take minutes
         threading.Thread(target=volumes.backfill_missing_histograms, name="histogram-backfill", daemon=True).start()
     print(f"[volume-gallery] Processing uploads in {settings.PROCESSING_DIR}; results are stored in {settings.DATA_DIR}.")
@@ -101,6 +105,9 @@ app.include_router(uploads.router)
 app.include_router(folders.router)
 app.include_router(paths.router)
 app.include_router(bookmarks.router)
+app.include_router(attachments.router)
+app.include_router(reports.router)
+app.include_router(processing_router.router)
 app.include_router(admin.router)
 
 class FrontendFiles(StaticFiles):
@@ -133,4 +140,4 @@ def service_worker():
     )
 
 
-app.mount("/", FrontendFiles(directory=settings.FRONTEND_DIR, html=True), name="frontend")
+app.mount("/", FrontendFiles(directory=settings.FRONTEND_DIR, html=True), name="frontend")

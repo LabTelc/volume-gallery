@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Processing — Volume Gallery</title>
+<script><%= require("./js/theme-init.js?raw") %></script>
+<link rel="stylesheet" href="<%= require('./css/style.css') %>" />
+<style>
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+    font-size: 0.75em;
+    font-family: var(--mono);
+    padding: 0.15em 0.55em;
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
+  }
+  .status-badge.processing { color: var(--accent); border-color: var(--accent-dim); }
+  .status-badge.failed { color: var(--danger); border-color: var(--danger); }
+  .status-badge .mini-spinner {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(232, 163, 61, 0.3);
+    border-top-color: var(--accent);
+    animation: vg-spin 0.7s linear infinite;
+  }
+  @keyframes vg-spin { to { transform: rotate(360deg); } }
+  .asset-row .log-line { font-size: 0.78em; color: var(--text-dim); margin-top: 0.25em; font-family: var(--mono); }
+  .asset-row .log-line.failed { color: var(--danger); }
+</style>
+</head>
+<body>
+  <div class="app-shell" id="shell"></div>
+
+</body>
+</html>

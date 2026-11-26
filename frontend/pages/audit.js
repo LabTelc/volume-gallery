@@ -21,6 +21,9 @@ document.getElementById("shell").innerHTML = `
         <option value="auth.login_failed">Failed sign-ins</option>
         <option value="user.">Accounts and passwords</option>
         <option value="volume.">Volumes</option>
+        <option value="attachment.">Attachments</option>
+        <option value="report.">Reports</option>
+        <option value="task.">Processing tasks</option>
         <option value="mesh.">Meshes</option>
         <option value="pointcloud.">Point clouds</option>
         <option value="access.">Access grants</option>
@@ -51,6 +54,12 @@ const LABELS = {
   "user.delete": "deleted user",
   "volume.create": "uploaded volume",
   "volume.delete": "deleted volume",
+  "attachment.add": "attached a file to",
+  "attachment.delete": "removed an attachment of",
+  "report.update": "edited the report of",
+  "report.image.add": "added a report image to",
+  "task.create": "asked for a task on",
+  "task.delete": "deleted a task of",
   "mesh.create": "uploaded mesh",
   "mesh.delete": "deleted mesh",
   "pointcloud.create": "uploaded point cloud",

@@ -89,6 +89,11 @@ services:
       VG_SLICE_CACHE_MB: ${VG_SLICE_CACHE_MB:-2048}
       VG_SLICE_BUILD_THREADS: ${VG_SLICE_BUILD_THREADS:-2}
       VG_SLICE_ZSTD_LEVEL: ${VG_SLICE_ZSTD_LEVEL:-1}
+      VG_EXPORT_RETENTION_HOURS: ${VG_EXPORT_RETENTION_HOURS:-24}
+      VG_EXPORT_MAX_GB: ${VG_EXPORT_MAX_GB:-0}
+      VG_EXPORT_THREADS: ${VG_EXPORT_THREADS:-}  # empty = min(4, CPU count)
+      VG_TASK_MAX_ACTIVE_PER_USER: ${VG_TASK_MAX_ACTIVE_PER_USER:-3}
+      VG_REPORT_IMAGE_MAX_MB: ${VG_REPORT_IMAGE_MAX_MB:-20}
     volumes:
       - ${VG_HOST_DATA_DIR:-./data}:/data
       - ${VG_HOST_PROCESSING_DIR:-./processing}:/processing
@@ -128,6 +133,8 @@ services:
       VG_PROCESSING_DIR: ${VG_PROCESSING_DIR:-}
       VG_QUEUE_NAME: ${VG_QUEUE_NAME:-volume-gallery}  # must match the app's
       VG_HISTOGRAM_THREADS: ${VG_HISTOGRAM_THREADS:-}  # empty = min(4, CPU count)
+      VG_EXPORT_RETENTION_HOURS: ${VG_EXPORT_RETENTION_HOURS:-24}  # (the worker sets when a TIFF stack expires)
+      VG_EXPORT_THREADS: ${VG_EXPORT_THREADS:-}  # empty = min(4, CPU count)
     volumes:
       - ${VG_HOST_DATA_DIR:-./data}:/data
       - ${VG_HOST_PROCESSING_DIR:-./processing}:/processing

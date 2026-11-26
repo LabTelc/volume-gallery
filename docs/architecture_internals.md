@@ -37,8 +37,14 @@ Uploads are received, unpacked, and converted in a scratch directory (`/processi
 | **Volume** | scratch (`.uploads` → slug) | scratch | written to `/data` |
 | **Mesh** | `/data` (`.uploads` → slug) | scratch (`.ply`, `.nxs`) | compressed into `/data` |
 | **Point Cloud** | scratch | — | octree exported to `/data` |
+| **Attachment** | `/data` (`.uploads` → `<slug>/attachments/`) | — | renamed into the volume's folder |
 
 *Note: Clean-up happens automatically. Incomplete uploads expire after 24 hours (`VG_UPLOAD_STAGING_MAX_AGE_HOURS`).*
+
+
+## Processing tasks
+
+A processing task (`backend/app/processing.py`, table `processingtask`) is work on a volume whose result is a file: today a ZIP of TIFF slices of one resolution level (`helpers/tiff_export.py`, which reads the bricks with the same reader as the slice views and holds about 64 slices in RAM at a time). A request creates the row and queues the job like an upload conversion (the Redis worker, or a background task of the web process without a queue). The row carries the status (queued, running, ready, failed, expired) and the progress, which the Processing page polls. A finished result is deleted `VG_EXPORT_RETENTION_HOURS` after it was made, by a cleanup thread of the web process (every 10 minutes, and whenever tasks are listed); results and half-written files that no task owns are swept too. Deleting a task or its volume while it runs stops it. The result lives in the volume's folder so that it is served by nginx with `X-Accel-Redirect` from the mount that already exists, and goes with the volume. A new kind of task is a function registered in `RUNNERS` and an endpoint that creates the row.
 
 ## Job Queue
 

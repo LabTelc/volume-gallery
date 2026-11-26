@@ -1,7 +1,7 @@
 from typing import Literal, Optional, List
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from .models import Role, AssetStatus
+from .models import Role, AssetStatus, TaskStatus
 
 
 class Token(BaseModel):
@@ -559,3 +559,94 @@ class StorageOverviewRead(BaseModel):
     leftovers: List[StorageLeftover]             # folders in the data directory that no asset points at
     missing: List[StorageAssetRow]               # ready assets whose folder is gone
     scanned_at: str
+
+
+# ---------- dataset report page ----------
+
+MAX_REPORT_CHARS = 1_000_000
+
+
+class AttachmentRead(BaseModel):
+    id: int
+    filename: str
+    size: int
+    content_type: str = ""
+    description: str = ""
+    created_at: str
+    created_by_name: Optional[str] = None
+
+
+class AttachmentUpdate(BaseModel):
+    """Only the fields that are sent are changed."""
+    filename: Optional[str] = Field(default=None, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ReportImageRead(BaseModel):
+    id: int
+    filename: str
+    content_type: str
+    size: int
+    created_at: str
+
+
+class ReportRead(BaseModel):
+    volume_id: int
+    markdown: str = ""
+    updated_at: Optional[str] = None
+    updated_by_name: Optional[str] = None
+    attachments: List[AttachmentRead] = []
+    # False for a share link that does not allow downloads (the list is shown, the files cannot be taken)
+    can_download: bool = True
+
+
+class ReportWrite(BaseModel):
+    markdown: str = Field(max_length=MAX_REPORT_CHARS)
+
+
+# ---------- processing tasks ----------
+
+class TaskRead(BaseModel):
+    id: int
+    kind: str
+    volume_id: int
+    volume_slug: str
+    volume_title: str
+    params: dict = {}
+    status: TaskStatus
+    status_log: List[str] = []
+    progress_done: int = 0
+    progress_total: int = 0
+    result_bytes: Optional[int] = None
+    download_name: Optional[str] = None
+    # who asked: only editors and administrators are told
+    created_by_name: Optional[str] = None
+    created_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    expires_at: Optional[str] = None
+
+
+class TiffLevelOption(BaseModel):
+    level: int
+    dimensions: List[int]            # x, y, z in voxels
+    voxel_size: List[float]          # x, y, z in the volume's unit
+    slices: int
+    bytes: int                       # about the size of the ZIP
+    allowed: bool = True
+    reason: Optional[str] = None     # why it is not allowed
+    task_id: Optional[int] = None    # a task for this level that is queued, running or ready
+    task_status: Optional[TaskStatus] = None
+
+
+class TiffExportOptions(BaseModel):
+    volume_id: int
+    title: str
+    data_type: str
+    unit: Optional[str] = None
+    retention_hours: float
+    levels: List[TiffLevelOption]
+
+
+class TiffExportRequest(BaseModel):
+    level: int = Field(ge=0, le=64)

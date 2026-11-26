@@ -37,7 +37,7 @@ def job_id(kind: str, asset_id: int) -> str:
 
 def dispatch(background_tasks, session: Session, kind: str, asset, func, *args) -> None:
     """Runs `func(*args)` after the response (no queue) or on the worker (queue). `kind`:
-    "volume" | "mesh" | "pointcloud". `func` must be importable by the worker and its
+    "volume" | "mesh" | "pointcloud" | "task". `func` must be importable by the worker and its
     arguments picklable; upload descriptors cannot be passed to a worker, so callers hand
     over None (see workdir.accept_upload(save_now=...))."""
     if not enabled():
@@ -52,8 +52,12 @@ def dispatch(background_tasks, session: Session, kind: str, asset, func, *args) 
             failure_ttl=3600,
         )
     except Exception as exc:  # noqa: BLE001 - Redis down: don't leave the asset "processing" forever
-        asset.status = AssetStatus.failed
-        asset.status_log = (asset.status_log or "") + f"{_now()}  Failed: could not queue the job ({exc})\n"
+        message = f"{_now()}  Failed: could not queue the job ({exc})"
+        if hasattr(asset, "queue_failed"):  # a processing task (models.ProcessingTask) has its own states
+            asset.queue_failed(message)
+        else:
+            asset.status = AssetStatus.failed
+            asset.status_log = (asset.status_log or "") + message + "\n"
         session.add(asset)
         session.commit()
         raise HTTPException(status_code=503, detail="The job queue is unavailable — try again shortly")
@@ -81,4 +85,28 @@ def live_assets() -> Set[Tuple[str, str]]:
                 if job is not None and job.get_status(refresh=True) in (
                         JobStatus.QUEUED, JobStatus.STARTED, JobStatus.DEFERRED, JobStatus.SCHEDULED):
                     live.add((scratch, asset.slug))
+    return live
+
+
+def live_task_ids() -> Set[int]:
+    """Ids of the processing tasks (models.ProcessingTask) whose job is still queued or running. Called by the
+    worker at start-up to tell tasks that are being handled from ones whose job died."""
+    from redis import Redis
+    from rq.job import Job, JobStatus
+    from sqlmodel import select
+    from .database import engine
+    from .models import ProcessingTask, TaskStatus
+
+    queue = get_queue()
+    queue.started_job_registry.cleanup()
+    conn = Redis.from_url(settings.REDIS_URL)
+    live = set()
+    with Session(engine) as session:
+        for task in session.exec(select(ProcessingTask).where(
+                ProcessingTask.status.in_([TaskStatus.queued, TaskStatus.running]))).all():
+            key = job_id("task", task.id)
+            job = Job.fetch(key, connection=conn) if conn.exists(Job.key_for(key)) else None
+            if job is not None and job.get_status(refresh=True) in (
+                    JobStatus.QUEUED, JobStatus.STARTED, JobStatus.DEFERRED, JobStatus.SCHEDULED):
+                live.add(task.id)
     return live

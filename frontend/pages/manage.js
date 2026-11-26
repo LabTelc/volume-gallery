@@ -194,7 +194,7 @@ async function load() {
           <option value="0">Never</option>
         </select>
       </div>
-      ${kind === "mesh" ? `<label class="cd-toggle" style="margin-bottom:0.6em"><input type="checkbox" id="share-cd"> allow download</label>` : ""}
+      ${kind === "mesh" || kind === "volume" ? `<label class="cd-toggle" style="margin-bottom:0.6em"><input type="checkbox" id="share-cd"> allow download${kind === "volume" ? " of the attachments" : ""}</label>` : ""}
       <button type="button" id="share-create-btn" class="primary">Create link</button>
     </div>
     <table class="responsive">
@@ -203,7 +203,7 @@ async function load() {
           <th>Short link</th>
           <th>Expires</th>
           <th>Views</th>
-          ${kind === "mesh" ? "<th>Download</th>" : ""}
+          ${kind === "mesh" || kind === "volume" ? "<th>Download</th>" : ""}
           <th></th>
         </tr>
       </thead>
@@ -229,14 +229,14 @@ async function load() {
               <td class="mono"><a href="${escapeHtml(s.url || `/s/${s.code}`)}" target="_blank" rel="noopener">${escapeHtml(s.code)}</a></td>
               <td>${expLabel}</td>
               <td>${Number(views)}</td>
-              ${kind === "mesh" ? `<td>${s.can_download ? "yes" : "no"}</td>` : ""}
+              ${kind === "mesh" || kind === "volume" ? `<td>${s.can_download ? "yes" : "no"}</td>` : ""}
               <td class="row-actions">
                 <button type="button" data-copy-share="${escapeHtml(s.url || `${window.location.origin}/s/${s.code}`)}">Copy URL</button>
                 <button type="button" class="danger" data-del-share="${s.id}">Revoke</button>
               </td>
             </tr>`;
           })
-          .join("") || `<tr><td colspan="${kind === "mesh" ? 5 : 4}" class="dim">No active share links.</td></tr>`}
+          .join("") || `<tr><td colspan="${kind === "mesh" || kind === "volume" ? 5 : 4}" class="dim">No active share links.</td></tr>`}
       </tbody>
     </table>
 

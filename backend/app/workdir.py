@@ -141,8 +141,9 @@ class StagedUpload(NamedTuple):
 
 def staging_dir(kind: str) -> Path:
     """Where uploads of this kind wait for their create request: next to where they end
-    up, so claiming one is a rename. kind: "volume" | "pointcloud" | "mesh"."""
-    return (settings.DATA_DIR if kind == "mesh" else settings.PROCESSING_DIR) / STAGING_NAME
+    up, so claiming one is a rename. kind: "volume" | "pointcloud" | "mesh" | "attachment". Meshes and attachments are
+    kept as they were uploaded, so they wait in the data folder; the rest is converted in the processing directory."""
+    return (settings.DATA_DIR if kind in ("mesh", "attachment") else settings.PROCESSING_DIR) / STAGING_NAME
 
 
 def safe_filename(name: str) -> str:
@@ -262,8 +263,7 @@ def sweep_staging(force: bool = True) -> None:
         return
     _last_sweep = now
     max_age = 3600 * settings.UPLOAD_STAGING_MAX_AGE_HOURS
-    for kind in ("volume", "mesh"):
-        base = staging_dir(kind)
+    for base in {staging_dir("volume"), staging_dir("mesh")}:  # (attachments wait next to the meshes)
         if not base.is_dir():
             continue
         for child in base.iterdir():

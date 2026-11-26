@@ -199,6 +199,31 @@ function userAdmin() {
     <p>Everything done here is written to the <strong>Audit log</strong> (side menu): who created, changed or deleted accounts, made password links, signed in or failed to, uploaded or deleted items, gave or removed access and made share links. It is kept until you delete rows by setting <code>VG_AUDIT_RETENTION_DAYS</code> (days; 0 keeps everything).</p>`;
 }
 
+function reports(role) {
+  const edit = (role === "editor" || role === "admin")
+    ? `<li><strong>Edit report</strong> opens an editor with a live preview. Write in markdown; the toolbar inserts headings, lists, links and formulas. Formulas are LaTeX between dollar signs (<code>$E = mc^2$</code>) or between <code>$$</code> lines. <strong>Image\u2026</strong> uploads a picture and inserts it (you can also drop or paste one into the text). Raw HTML is not shown.</li>
+      <li><strong>Attach files\u2026</strong> adds any files to the volume (a PDF report, raw data, a calibration file). Edit changes a file\u2019s name or description, Delete removes it from the server.</li>
+      <li>A share link shows the report too, but lets people take the attachments only if you tick <em>allow download of the attachments</em> when you create it (Manage).</li>`
+    : "";
+  return `<p>Every volume has a <strong>report</strong> page: <strong>Report</strong> on its row in the gallery, or the Report button in the viewer (it opens in a new tab).</p>
+    <ul>
+      <li>The page shows the text its editors wrote and the files attached to the volume. <strong>Download</strong> saves an attachment.</li>
+      <li><strong>Download as TIFF stack</strong> prepares the volume as TIFF slices (see <em>Processing</em>).</li>
+      ${edit}
+    </ul>`;
+}
+function processingHelp(role) {
+  const edit = (role === "editor" || role === "admin")
+    ? " Editors and administrators see every task, and can delete a result early or stop a task that is running."
+    : " You see the tasks of the volumes you can see.";
+  return `<p><strong>Processing</strong> in the side menu lists work the server does on volumes in the background. For now that is making a <strong>TIFF stack</strong>.</p>
+    <ul>
+      <li>On a volume\u2019s report page, choose <strong>Download as TIFF stack</strong> and pick the quality. Level 0 is the full resolution; each level after it halves every side of the volume, so the stack is about eight times smaller. The sizes are shown before you ask.</li>
+      <li>The server decodes the volume into one TIFF file per slice, packs them into a ZIP and keeps it for a limited time (set by the administrator, a day unless changed). A big volume takes a while: leave the page, the task goes on, and the Processing page shows its progress.</li>
+      <li>When the task is <strong>ready</strong>, press <strong>Download</strong>. After the retention time the result is deleted and the task shows as expired; ask for it again if you still need it. Asking for a stack that is already made or being made gives you that one.</li>
+      <li>The ZIP also holds <code>metadata.json</code> with the dimensions, data type and voxel size. The voxel size is in the TIFF files too, when the volume\u2019s unit is a length.${edit}</li>
+    </ul>`;
+}
 function account() {
   return `<ul>
       <li>Open <strong>Account</strong> in the side menu to change your password. You need the current one, and the new one must be at least 8 characters unless your administrator changed that limit. Your other sessions are signed out.</li>
@@ -246,6 +271,8 @@ const TOPICS = [
   { id: "volume", title: "Viewing a CT volume", body: () => volumeViewer() },
   { id: "mesh", title: "Viewing a mesh", body: (c) => meshViewer(c.role) },
   { id: "pointcloud", title: "Viewing a point cloud", body: () => pointcloudViewer() },
+  { id: "reports", title: "Reports and attachments", body: (c) => reports(c.role) },
+  { id: "processing", title: "Processing: TIFF stacks", body: (c) => processingHelp(c.role) },
   { id: "uploading", title: "Uploading items", when: isEditor, body: () => uploading() },
   { id: "organising", title: "Organising the gallery", when: isEditor, body: () => organising() },
   { id: "managing", title: "Managing items and access", when: isEditor, body: (c) => managing(c.role) },
@@ -323,6 +350,16 @@ const PAGE_HINTS = {
   admin: {
     topic: "users",
     text: () => "Create accounts and choose reader, editor or admin: you get a one-time link for the new user to set their password. You can also disable an account, make a reset link for a forgotten password or delete it.",
+  },
+  processing: {
+    topic: "processing",
+    text: () => "Work the server does on volumes in the background, such as making a TIFF stack. A finished result can be downloaded until its retention time is over.",
+  },
+  report: {
+    topic: "reports",
+    text: (role) => role === "reader"
+      ? "What the editors wrote about this volume, and the files attached to it. Download as TIFF stack prepares all slices as TIFF files."
+      : "Edit report writes the text (markdown, images, LaTeX formulas); Attach files adds any files to the volume. Download as TIFF stack prepares all slices as TIFF files.",
   },
   account: {
     topic: "account",

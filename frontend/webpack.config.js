@@ -9,7 +9,7 @@
 // file whose content changed, and never has to download one that did not: no ?v=... on any URL.
 // What is not hashed and why: the HTML pages (they carry the hashes: the server sends them with
 // Cache-Control: no-cache), css/style.css and favicon.ico (kept under their plain names), js/sw.js (the service
-// worker has to keep its URL), /vendor/* (the prebuilt Potree and 3DHOP libraries the viewer pages load as classic
+// worker has to keep its URL), css/katex.min.css with css/fonts/ (see KATEX_DIST), /vendor/* (the prebuilt Potree and 3DHOP libraries the viewer pages load as classic
 // scripts; the Docker build adds them to the served directory).
 
 const fs = require("fs");
@@ -25,6 +25,12 @@ const KILN_RENDER = process.env.KILN_RENDER_LIB || path.resolve(__dirname, "vend
 // the browser asks for /favicon.ico on its own (no page links it).
 const STATIC_FILES = ["favicon.ico"];
 
+// KaTeX (the formulas of a report, js/report-markdown.js) draws with its own fonts. Its stylesheet names them
+// relatively (fonts/KaTeX_Main-Regular.woff2), so the stylesheet and the fonts go to dist/css/ as they are and the
+// report page links /css/katex.min.css. Only the woff2 files: every browser this app supports reads them, and the
+// stylesheet offers the older formats after them.
+const KATEX_DIST = path.join(path.dirname(require.resolve("katex/package.json")), "dist");
+
 class PlainNames {
   apply(compiler) {
     compiler.hooks.thisCompilation.tap("PlainNames", (compilation) => {
@@ -33,6 +39,14 @@ class PlainNames {
         // the stylesheet by its plain name: a copy of the hashed file goes to css/style.css for it.
         const hashed = Object.keys(assets).find((n) => /^css\/style\.[0-9a-f]{12}\.css$/.test(n));
         if (hashed) compilation.emitAsset("css/style.css", new sources.RawSource(assets[hashed].source()));
+        const katexFiles = [["katex.min.css", "css/katex.min.css"]].concat(
+          fs.readdirSync(path.join(KATEX_DIST, "fonts")).filter((f) => f.endsWith(".woff2")).map((f) => [`fonts/${f}`, `css/fonts/${f}`])
+        );
+        for (const [from, to] of katexFiles) {
+          const abs = path.join(KATEX_DIST, from);
+          compilation.fileDependencies.add(abs);
+          compilation.emitAsset(to, new sources.RawSource(fs.readFileSync(abs)));
+        }
         for (const file of STATIC_FILES) {
           const from = path.join(__dirname, file);
           compilation.fileDependencies.add(from); // (watch mode rebuilds when it changes)

@@ -163,9 +163,9 @@ http {
 			proxy_set_header X-Forwarded-Port ${VG_HTTPS_PORT};
 		}
 
-		# Meshes land in the data folder's own staging directory (mounted rw at
-		# /data/.uploads, see docker-compose.yml): the mesh original stays there.
-		location = /api/uploads/mesh {
+		# Meshes and attachments land in the data folder's own staging directory (mounted rw at
+		# /data/.uploads, see docker-compose.yml): they are kept as uploaded.
+		location ~ ^/api/uploads/(mesh|attachment)$ {
 			if ($request_method != PUT) { return 405; }
 			auth_request /_vg_upload_auth;
 

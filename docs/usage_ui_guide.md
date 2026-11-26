@@ -34,6 +34,16 @@ The mesh field accepts any supported mesh file (STL/OBJ/PLY/...) and stores the 
 *   **Long-Running Displays:** While anything long-running is going on, the viewer renews its data access token in the background, so a display can run for hours.
 *   **Slices at Any Angle:** The three slice panes show three perpendicular planes through the cursor. The server streams exactly the blocks needed for the requested plane angle.
 
+## Reports, attachments and TIFF stacks
+
+Every volume has a **report page** (`/report.html?id=<volume id>`: *Report* on its gallery row, or the Report button of the viewer). Anybody who can see the volume reads it; editors and administrators write it.
+
+- **Text:** markdown, with LaTeX formulas (`$E = mc^2$` in a line, `$$ ... $$` on lines of their own) and images (uploaded from the editor, written as `![caption](img:12)`; drop or paste an image into the text to add one). Raw HTML is not shown, and images from other sites are not loaded, so a report cannot run anything in a reader's browser.
+- **Attachments:** any files attached to the volume, downloadable by everybody who can see the volume. They are kept in `<data>/volumes/<slug>/attachments/` and are deleted with the volume. A share link shows the report and the list, and lets people take the files only when the link was made with *allow download of the attachments*.
+- **TIFF stack:** *Download as TIFF stack* asks for the volume as one TIFF file per slice in a ZIP, at a chosen resolution level (level 0 is the full resolution; each level after it halves every side). The server prepares it in the background: it decodes the bricks of that level and writes the slices straight into the ZIP, in `<data>/volumes/<slug>/exports/`. The **Processing** page (side menu) shows the task and its progress and offers the download when it is ready. The ZIP is kept for `VG_EXPORT_RETENTION_HOURS` (24 by default) and then deleted; the task shows as expired and can be asked for again. Asking for a stack that is already made or being made returns that task. The voxel size is written into the TIFF files (when the volume's unit is a length) and into `metadata.json` in the ZIP. Not for share-link guests (they have no Processing page).
+
+The Processing page is where other background work on volumes will appear too: a task is a row with a kind, its settings, a progress, a result file and an expiry (`backend/app/processing.py` says how to add a kind).
+
 ## Histogram
 
 The volume viewer draws a histogram behind the transfer-function curve. It is computed from the original full-resolution TIFF stack during conversion and stored as `histogram.json`. `VG_HISTOGRAM_THREADS` (default: up to 4) limits CPU use during conversion. 

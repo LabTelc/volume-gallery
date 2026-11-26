@@ -77,6 +77,8 @@ _GRANT_BY_KIND = {
     "slice": (VolumeAccess, VolumeAccess.volume_id),
     "volume-mesh-download": (VolumeAccess, VolumeAccess.volume_id),
     "volume-mesh-view": (VolumeAccess, VolumeAccess.volume_id),
+    "volume-attachment": (VolumeAccess, VolumeAccess.volume_id),
+    "task-result": (VolumeAccess, VolumeAccess.volume_id),
     "mesh": (MeshAccess, MeshAccess.mesh_id),
     "mesh-download": (MeshAccess, MeshAccess.mesh_id),
     "pc-octree": (PointCloudAccess, PointCloudAccess.pointcloud_id),
