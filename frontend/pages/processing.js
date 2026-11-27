@@ -5,7 +5,7 @@ import { api, requireLogin, getRole, getUsername, renderShell, wireLogout, escap
 import { pageHint } from "../js/help.js";
 import { taskTitle, taskPercent, timeLeft, lastLogMessage } from "../js/task-format.js";
 
-requireLogin();
+await requireLogin();
 const role = getRole();
 if (role === "guest") window.location.href = "/index.html";
 const isEditor = role === "editor" || role === "admin";

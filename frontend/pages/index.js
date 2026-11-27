@@ -6,7 +6,7 @@ import {
   escapeHtml, compareNames, folderIndex, openEditDialog, openFolderDialog,
 } from "../js/organize.js";
 
-requireLogin();
+await requireLogin();
 const role = getRole();
 const isEditor = role === "admin" || role === "editor";
 

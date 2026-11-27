@@ -41,7 +41,10 @@ class TestCreate:
         volume = make_volume()
         response = client.post(
             "/api/shares", json={"asset_type": "volume", "asset_id": volume.id},
-            headers={**auth(editor), "X-Forwarded-Proto": "https", "X-Forwarded-Host": "gallery.example:8443"},
+            headers={
+                **auth(editor), "X-Forwarded-Proto": "https", "X-Forwarded-Host": "gallery.example:8443",
+                "Origin": "https://gallery.example:8443",  # (what the browser sends to that address)
+            },
         )
         assert response.json()["url"] == f"https://gallery.example:8443/s/{response.json()['code']}"
 

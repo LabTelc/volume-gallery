@@ -4,7 +4,7 @@ import { backToFolderButton } from "../js/back-link.js";
 import { toggleHelpPanel } from "../js/help.js";
 import { makeDescriptionExpandable } from "../js/description.js";
 
-requireLogin();
+await requireLogin();
 const role = getRole();
 const params = new URLSearchParams(window.location.search);
 const meshId = params.get("id");

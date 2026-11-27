@@ -1,8 +1,8 @@
 // The page script of account.html (it was an inline <script type="module"> there). Bundled by webpack.config.js.
-import { api, requireLogin, getRole, getUsername, setSession, renderShell, wireLogout, escapeHtml } from "../js/api.js";
+import { api, requireLogin, getRole, getUsername, renderShell, wireLogout, escapeHtml } from "../js/api.js";
 import { pageHint } from "../js/help.js";
 
-requireLogin();
+await requireLogin();
 const role = getRole();
 
 document.getElementById("shell").innerHTML = `
@@ -50,9 +50,7 @@ form.addEventListener("submit", async (e) => {
     return;
   }
   try {
-    const data = await api.changePassword(current, next);
-    // The server revoked the old token; keep this browser signed in with the new one.
-    setSession(data.access_token, data.role, data.username);
+    await api.changePassword(current, next); // the server gave this browser a new session cookie; the others are out
     form.reset();
     successBox.textContent = "Password changed. Your other sessions have been signed out.";
     successBox.style.display = "block";

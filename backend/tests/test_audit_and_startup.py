@@ -192,7 +192,7 @@ class TestLifespan:
         from app.main import app
         monkeypatch.setattr(settings, "BOOTSTRAP_ADMIN_USER", "boss")
         monkeypatch.setattr(settings, "BOOTSTRAP_ADMIN_PASSWORD", "bootstrap-password")
-        with TestClient(app) as client:
+        with TestClient(app, headers={"X-Requested-With": "vg"}) as client:
             response = client.post("/api/auth/login", data={"username": "boss", "password": "bootstrap-password"})
             assert response.status_code == 200
             assert response.json()["role"] == "admin"

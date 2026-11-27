@@ -1,7 +1,8 @@
 // The page script of login.html (it was an inline <script type="module"> there). Bundled by webpack.config.js.
-import { api, setSession, getToken, postLoginUrl, getBranding, getCachedBranding, brandLogoHtml, contactItems, linkItems, escapeHtml } from "../js/api.js";
+import { api, loadSession, postLoginUrl, getBranding, getCachedBranding, brandLogoHtml, contactItems, linkItems, escapeHtml } from "../js/api.js";
 
-if (getToken()) window.location.href = postLoginUrl();
+// Already signed in (the session cookie is good in every tab): nothing to do here.
+loadSession().then((me) => { if (me) window.location.href = postLoginUrl(); }).catch(() => { /* server unreachable: show the form */ });
 
 // Name, logo, copyright and contact details come from the server's branding.toml.
 // Drawn from the cached copy at once (no flash of the defaults), then refreshed from the
@@ -41,8 +42,7 @@ form.addEventListener("submit", async (e) => {
   const username = document.getElementById("username").value.trim();
   const password = document.getElementById("password").value;
   try {
-    const data = await api.login(username, password);
-    setSession(data.access_token, data.role, data.username);
+    await api.login(username, password, document.getElementById("remember").checked); // sets the session cookie
     window.location.href = postLoginUrl();
   } catch (err) {
     errorBox.textContent = err.message;

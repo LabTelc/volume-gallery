@@ -28,7 +28,7 @@ import { History, bindUndoKeys } from "../js/tf-history.js";
     import { captureStill } from "../js/render-capture.js";
     import { startBrickCache, watchDataAccess, resetDataAccessWatch, onDataAccessExpired, setDataAccess, dataAccessExpiresAt, dataAccessTtlMs } from "../js/data-access.js";
 
-    requireLogin();
+    await requireLogin();
     const role = getRole();
     const params = new URLSearchParams(window.location.search);
     const volumeId = params.get("id");
@@ -336,11 +336,8 @@ import { History, bindUndoKeys } from "../js/tf-history.js";
 
       $("tiff-btn")?.addEventListener("click", () => openTiffExportDialog(volume));
       $("report-btn").addEventListener("click", () => {
-        // No "noopener" feature here: a tab opened that way starts with an empty sessionStorage, which is where the
-        // sign-in token lives, so the report asked for a login. A plain window.open copies the storage into the new
-        // tab; the opener link is cut afterwards instead.
-        const w = window.open(`/report.html?id=${volume.id}`, "_blank");
-        if (w) { try { w.opener = null; } catch (_) { /* cross-origin: nothing to cut */ } }
+        // The sign-in is a cookie, shared by every tab and window: a new one needs nothing from this page.
+        window.open(`/report.html?id=${volume.id}`, "_blank", "noopener,noreferrer");
       });
       const fullscreenBtn = $("fullscreen-btn");
       fullscreenBtn.addEventListener("click", () => {

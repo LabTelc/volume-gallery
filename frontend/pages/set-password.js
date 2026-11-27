@@ -1,5 +1,5 @@
 // The page script of set-password.html (it was an inline <script type="module"> there). Bundled by webpack.config.js.
-import { api, setSession, postLoginUrl, getBranding, getCachedBranding, brandLogoHtml, contactItems, linkItems, escapeHtml } from "../js/api.js";
+import { api, postLoginUrl, getBranding, getCachedBranding, brandLogoHtml, contactItems, linkItems, escapeHtml } from "../js/api.js";
 
 // The link an administrator gave you: /set-password.html#token=... (the token stays in the fragment, which the
 // browser does not send anywhere). It is taken out of the address bar at once so it is not left in the history.
@@ -59,8 +59,7 @@ form.addEventListener("submit", async (e) => {
   if (password !== document.getElementById("confirm-password").value) { fail("The passwords do not match."); return; }
   document.getElementById("save").disabled = true;
   try {
-    const data = await api.setPasswordWithLink(token, password);
-    setSession(data.access_token, data.role, data.username);
+    await api.setPasswordWithLink(token, password); // the server signs the user in: session cookie
     window.location.href = postLoginUrl();
   } catch (err) {
     fail(err.message);

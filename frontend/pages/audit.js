@@ -1,7 +1,7 @@
 // The page script of audit.html (it was an inline <script type="module"> there). Bundled by webpack.config.js.
 import { api, requireLogin, getRole, getUsername, renderShell, wireLogout, escapeHtml } from "../js/api.js";
 
-requireLogin();
+await requireLogin();
 const role = getRole();
 if (role !== "admin") window.location.href = "/index.html";
 
@@ -19,6 +19,7 @@ document.getElementById("shell").innerHTML = `
         <option value="">All events</option>
         <option value="auth.">Sign-ins</option>
         <option value="auth.login_failed">Failed sign-ins</option>
+        <option value="auth.login_blocked">Refused sign-ins</option>
         <option value="user.">Accounts and passwords</option>
         <option value="volume.">Volumes</option>
         <option value="attachment.">Attachments</option>
@@ -47,6 +48,8 @@ wireLogout();
 const LABELS = {
   "auth.login": "signed in",
   "auth.login_failed": "failed sign-in",
+  "auth.login_blocked": "sign-in refused (too many failures)",
+  "auth.logout": "signed out",
   "user.create": "created user",
   "user.password_link": "made a password link for",
   "user.password_set": "set password of",
@@ -82,7 +85,7 @@ function detailText(e) {
 }
 
 function rowHtml(e) {
-  const bad = e.action === "auth.login_failed";
+  const bad = e.action === "auth.login_failed" || e.action === "auth.login_blocked";
   const when = new Date(e.at);
   const target = e.target_name ? escapeHtml(e.target_name) : "";
   return `<tr>

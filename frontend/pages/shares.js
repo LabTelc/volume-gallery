@@ -1,7 +1,7 @@
 // The page script of shares.html (it was an inline <script type="module"> there). Bundled by webpack.config.js.
 import { api, requireLogin, getRole, getUsername, renderShell, wireLogout, escapeHtml } from "../js/api.js";
 
-requireLogin();
+await requireLogin();
 const role = getRole();
 if (role !== "admin") window.location.href = "/index.html";
 

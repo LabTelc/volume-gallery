@@ -12,6 +12,38 @@ class Settings:
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.environ.get("VG_ACCESS_TOKEN_MINUTES", "480"))
     # Short-lived token used to authorize a single volume-data / mesh download
     FILE_TOKEN_EXPIRE_MINUTES: int = int(os.environ.get("VG_FILE_TOKEN_MINUTES", "30"))
+    # --- Browser sessions (cookie; see sessions.py and docs/auth.md) ---
+    # Set to 0 ONLY for local development over plain http: the cookie then has no Secure flag and is called
+    # "vg_session" instead of "__Host-vg_session" (the __Host- prefix requires Secure).
+    COOKIE_SECURE: bool = os.environ.get("VG_COOKIE_SECURE", "1").lower() not in ("0", "false", "no", "off")
+    # A session ends after this long without a request ...
+    SESSION_IDLE_MINUTES: int = int(os.environ.get("VG_SESSION_IDLE_MINUTES", "480"))
+    # ... and in any case this long after sign-in.
+    SESSION_ABSOLUTE_HOURS: int = int(os.environ.get("VG_SESSION_ABSOLUTE_HOURS", "24"))
+    # "Keep me signed in": the cookie gets a Max-Age of REMEMBER_DAYS (also the absolute limit); idle limit in days.
+    REMEMBER_DAYS: int = int(os.environ.get("VG_REMEMBER_DAYS", "30"))
+    REMEMBER_IDLE_DAYS: int = int(os.environ.get("VG_REMEMBER_IDLE_DAYS", "7"))
+    # Bearer tokens for normal users: when on, POST /api/auth/login also returns "access_token" and
+    # `Authorization: Bearer <access token>` works (API/CLI clients; or a frontend that is not migrated yet).
+    # Off by default: the browser frontend uses the session cookie only. Share-link (guest) tokens are always
+    # accepted. See docs/auth.md.
+    ALLOW_BEARER_AUTH: bool = os.environ.get("VG_ALLOW_BEARER_AUTH", "0").lower() in ("1", "true", "yes", "on")
+    # Failed sign-ins (from the audit log) in the last LOGIN_WINDOW_MINUTES that lock further attempts out: for one
+    # account from one address, from one address in all, and for one account from anywhere.
+    LOGIN_WINDOW_MINUTES: int = int(os.environ.get("VG_LOGIN_WINDOW_MINUTES", "15"))
+    LOGIN_MAX_FAILURES: int = int(os.environ.get("VG_LOGIN_MAX_FAILURES", "5"))
+    LOGIN_MAX_FAILURES_PER_IP: int = int(os.environ.get("VG_LOGIN_MAX_FAILURES_PER_IP", "30"))
+    LOGIN_MAX_FAILURES_PER_USER: int = int(os.environ.get("VG_LOGIN_MAX_FAILURES_PER_USER", "50"))
+    # Extra origins (comma separated, e.g. https://gallery.example.org) from which state-changing requests are
+    # accepted besides the one the request itself was made to. Normally empty.
+    ALLOWED_ORIGINS: str = os.environ.get("VG_ALLOWED_ORIGINS", "")
+    # Content-Security-Policy: "enforce" (default), "report-only" (the browser only reports violations in its console)
+    # or "off".
+    CSP_MODE: str = os.environ.get("VG_CSP", "enforce").lower()
+    # Strict-Transport-Security max-age in seconds, sent on https requests; 0 = not sent. Leave it at 0 while the
+    # site uses a self-signed certificate: browsers do not let a user click through a certificate error on an HSTS host.
+    HSTS_MAX_AGE: int = int(os.environ.get("VG_HSTS_MAX_AGE", "0"))
+
     # Shortest password accepted when a password is set or changed
     MIN_PASSWORD_LENGTH: int = int(os.environ.get("VG_MIN_PASSWORD_LENGTH", "8"))
     # How long the link an admin generates (to set a new user's password or to reset one) works, in hours.

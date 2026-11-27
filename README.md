@@ -30,6 +30,7 @@ pip install -r requirements.txt
 export VG_DATA_DIR=../data
 export VG_SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
 export VG_ADMIN_PASSWORD='pick-a-password'  # only used to create the first admin
+export VG_COOKIE_SECURE=0                   # plain http only: see below
 uvicorn app.main:app --reload --port 8000
 ```
 The frontend is bundled with webpack, and the backend serves the result (`frontend/dist`), so build it once first
@@ -40,7 +41,11 @@ cd frontend
 npm ci
 KILN_RENDER_LIB=/path/to/kiln-render/lib/kiln-render.js npm run build   # or `npm run watch` while editing
 ```
-Then open `http://localhost:8000`, sign in as `admin` with the password you set. (The Potree and 3DHOP viewers load their
+Then open `http://localhost:8000`, sign in as `admin` with the password you set. Sign-in is an HttpOnly session cookie that is
+`Secure` (and named `__Host-vg_session`) by default, which browsers only accept over https: `VG_COOKIE_SECURE=0` (set above)
+turns that off for local development over plain http, and only there (see [docs/auth.md](docs/auth.md)). If you open the
+app through a differently named address than the one the browser shows (a tunnel, another proxy), list that origin in
+`VG_ALLOWED_ORIGINS`. (The Potree and 3DHOP viewers load their
 libraries from `frontend/dist/vendor`, which only the Docker image fills: the point cloud and mesh viewers need it.)
 
 ## Documentation
@@ -49,6 +54,7 @@ Detailed documentation has been split into the following guides:
 
 *   **[Usage & UI Guide](docs/usage_ui_guide.md)**: Uploading volumes, UI features (bookmarks, animations, slice sweeps), branding, and histograms.
 *   **[Configuration](docs/configuration.md)**: Every setting of `.env` / `docker-compose.yml` in one table, with defaults.
+*   **[Authentication](docs/auth.md)**: The session cookie, CSRF checks, security headers, sign-in lockout, share-link guests, and what a reverse proxy must pass through.
 *   **[Deployment Guide](docs/deployment_guide.md)**: TrueNAS SCALE deployment, HTTPS/TLS requirements, Docker Hub publishing, and backups.
 *   **[Architecture & Internals](docs/architecture_internals.md)**: Backend/frontend design, job queues (Redis), background processing, and permissions.
 *   **[Kiln Volume Format](docs/kiln_volume_format.md)**: Deep dive into the sharded volume format specification.

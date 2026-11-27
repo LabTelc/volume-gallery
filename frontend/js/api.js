@@ -1,21 +1,21 @@
-// Thin fetch wrapper around the backend API. Keeps the JWT in sessionStorage —
-// fine for a small internal-network appliance; put this behind HTTPS in prod.
+// Thin fetch wrapper around the backend API.
+//
+// Signing in is a session cookie (__Host-vg_session: HttpOnly, Secure, SameSite=Lax), set by the server. Scripts
+// cannot read it, so there is no token here: who is signed in is asked of GET /api/auth/me (see loadSession), and
+// the answer is only kept in memory. The one credential kept in sessionStorage is the scoped, read-only token of a
+// guest share link (vg_share_token); it is sent as a bearer header only while nobody is really signed in.
+// docs/auth.md describes the whole design.
 
-const TOKEN_KEY = "vg_token";
-const ROLE_KEY = "vg_role";
-const USER_KEY = "vg_username";
 const SHARE_TOKEN_KEY = "vg_share_token";
 const SHARE_CODE_KEY = "vg_share_code";
 const RAIL_COLLAPSED_KEY = "vg_rail_collapsed";
 
-// The primary auth token lives in a variable AND in sessionStorage. The variable alone is lost on
-// every page load (sign-in ends with a navigation), which made every page redirect back to the login.
-// sessionStorage is per tab and is cleared when the tab closes.
-let runtimeToken = null;
+// Header every state-changing request carries (the server refuses those without it: CSRF defence in depth).
+export const CSRF_HEADER = "X-Requested-With";
+export const CSRF_VALUE = "vg";
 
-function _storedToken() {
-    try { return sessionStorage.getItem(TOKEN_KEY); } catch (_) { return null; }
-}
+// Who is signed in ({username, role}), from /api/auth/me. Null until loadSession() has answered, or when nobody is.
+let currentUser = null;
 
 // Consume #vg_st=<token>&vg_sc=<code> from /s/<code> redirect immediately on module load
 (function _consumeShareHash() {
@@ -32,80 +32,67 @@ function _storedToken() {
   } catch (_) {}
 })();
 
-export function isGuestShareSession() {
-    return Boolean(sessionStorage.getItem(SHARE_TOKEN_KEY)) && !sessionStorage.getItem(TOKEN_KEY);
+export function getShareToken() {
+    try { return sessionStorage.getItem(SHARE_TOKEN_KEY); } catch (_) { return null; }
 }
 
-export function getShareToken() {
-    return sessionStorage.getItem(SHARE_TOKEN_KEY);
+// A guest of a share link: a share token and nobody really signed in. (A real sign-in replaces a guest session.)
+export function isGuestSession() {
+    return Boolean(getShareToken()) && !currentUser;
 }
+export const isGuestShareSession = isGuestSession; // (the older name)
 
 export function clearShareSession() {
     sessionStorage.removeItem(SHARE_TOKEN_KEY);
     sessionStorage.removeItem(SHARE_CODE_KEY);
 }
 
-export function getToken() {
-    // On viewer pages, if a scoped share session token is active, use it when no user is logged in
-    // (or prefer it if the URL was opened via a share link).
-    if (window.location.pathname.startsWith("/viewers/") && sessionStorage.getItem(SHARE_TOKEN_KEY)) {
-        return sessionStorage.getItem(SHARE_TOKEN_KEY);
-    }
-    return runtimeToken || _storedToken() || sessionStorage.getItem(SHARE_TOKEN_KEY);
+// The Authorization header of a request: only a guest share session has one. A signed-in browser sends its cookie.
+function _authHeaders() {
+    return isGuestSession() ? {Authorization: `Bearer ${getShareToken()}`} : {};
 }
 
- function _jwtPayload(token) {
-     try {
-         const parts = String(token || "").split(".");
-         if (parts.length < 2) return null;
-         const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-         const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-         return JSON.parse(atob(padded));
-     } catch (_) {
-         return null;
-     }
- }
-
 export function getRole() {
-    if (sessionStorage.getItem(SHARE_TOKEN_KEY) && !sessionStorage.getItem(TOKEN_KEY)) return "guest";
-    const payload = _jwtPayload(sessionStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(SHARE_TOKEN_KEY));
-    if (payload && typeof payload.role === "string" && payload.role) return payload.role;
-    if (payload && Array.isArray(payload.roles) && payload.roles.length) return String(payload.roles[0]);
-    // Backward compatibility for sessions created before role derivation from JWT.
-    return sessionStorage.getItem(ROLE_KEY) || (sessionStorage.getItem(SHARE_TOKEN_KEY) ? "guest" : null);
+    if (currentUser) return currentUser.role;
+    return getShareToken() ? "guest" : null;
 }
 
 export function getUsername() {
-    const stored = sessionStorage.getItem(USER_KEY);
-    if (stored) return stored; // backward compatibility with older sessions
-    const sub = _jwtPayload(_storedToken())?.sub;
-    if (typeof sub === "string" && sub) return sub;
+    if (currentUser) return currentUser.username;
     const shareCode = sessionStorage.getItem(SHARE_CODE_KEY);
     if (shareCode) return `shared:${shareCode}`;
-    return sessionStorage.getItem(ROLE_KEY) ? "user" : "guest";
+    return "guest";
 }
 
-export function setSession(token, role, username) {
-    runtimeToken = token;
-    try {
-        sessionStorage.setItem(TOKEN_KEY, token);
-        sessionStorage.removeItem(SHARE_TOKEN_KEY); // a real sign-in replaces any guest share session
-    } catch (_) { /* storage blocked: the token then only survives until the next page load */ }
-    // Role and username are not stored: getRole() and getUsername() read them from the token's claims.
-    // The arguments are kept for API compatibility with existing callers.
-    void role;
-    void username;
+// Asks the server who is signed in (the cookie is sent by the browser; no Authorization header on purpose: a share
+// token must not hide a real session). Resolves with {username, role}, or null when nobody is signed in.
+export async function loadSession() {
+    const res = await fetch("/api/auth/me", {credentials: "same-origin", cache: "no-store"});
+    if (res.status === 401) {
+        currentUser = null;
+        return null;
+    }
+    if (!res.ok) throw new Error(`Could not check the sign-in (${res.status})`);
+    const me = await res.json();
+    currentUser = {username: me.username, role: me.role};
+    return currentUser;
 }
 
-
+// Forgets everything about the sign-in in this page and the caches that belong to whoever was signed in. (The cookie
+// itself is expired by the server: see signOut().)
 export function clearSession() {
-    runtimeToken = null;
-    sessionStorage.removeItem(TOKEN_KEY);
-    sessionStorage.removeItem(ROLE_KEY);
-    sessionStorage.removeItem(USER_KEY);
+    currentUser = null;
     clearShareSession();
     // The volume bricks the service worker (js/sw.js) cached belong to whoever was signed in.
     try { navigator.serviceWorker?.controller?.postMessage({ type: "CLEAR_BRICK_CACHE" }); } catch (_) { /* no worker */ }
+}
+
+// Signs out: the server ends the session and expires the cookie, then the caches are cleared.
+export async function signOut() {
+    try {
+        await fetch("/api/auth/logout", {method: "POST", credentials: "same-origin", headers: {[CSRF_HEADER]: CSRF_VALUE}});
+    } catch (_) { /* offline: the cookie stays; nothing more to do from here */ }
+    clearSession();
 }
 
 // ---- branding (branding/branding.toml on the server; see the README) ----
@@ -274,23 +261,34 @@ export function postLoginUrl() {
     }
 }
 
-export function requireLogin() {
-    if (!getToken()) {
-        window.location.href = loginUrl();
-        // Stop the page's own script here: it would otherwise carry on and, for pages that
-        // check the role next, replace this redirect with one to the gallery (losing the link).
-        throw new Error("Not signed in: redirecting to the login page");
+// Call (and await) at the top of every page that needs a sign-in, before anything is drawn, so there is no flash of
+// content for somebody who is not signed in: it asks the server who is asking (/api/auth/me), and on 401 goes to the
+// login page, which remembers where to come back to. A guest of a share link passes without a session.
+export async function requireLogin() {
+    const me = await loadSession();
+    if (me) {
+        clearShareSession(); // a real sign-in replaces any guest share session
+        return me;
     }
+    if (getShareToken()) return null;
+    window.location.href = loginUrl();
+    // Stop the page's own script here: it would otherwise carry on and, for pages that
+    // check the role next, replace this redirect with one to the gallery (losing the link).
+    throw new Error("Not signed in: redirecting to the login page");
+}
+
+function _sessionEnded() {
+    clearSession();
+    window.location.href = loginUrl();
 }
 
 async function request(path, options = {}) {
-    const headers = options.headers || {};
-    const token = getToken();
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-    const res = await fetch(path, {...options, headers});
+    const method = (options.method || "GET").toUpperCase();
+    const headers = {...(options.headers || {}), ..._authHeaders()};
+    if (method !== "GET" && method !== "HEAD") headers[CSRF_HEADER] = CSRF_VALUE;
+    const res = await fetch(path, {...options, headers, credentials: "same-origin"});
     if (res.status === 401) {
-        clearSession();
-        window.location.href = loginUrl();
+        _sessionEnded();
         throw new Error("Not authenticated");
     }
     if (!res.ok) {
@@ -317,16 +315,13 @@ function _xhrWithProgress(method, path, body, onProgress, headers = {}) {
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open(method, path);
-        const token = getToken();
-        if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-        for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value);
+        for (const [name, value] of Object.entries({..._authHeaders(), [CSRF_HEADER]: CSRF_VALUE, ...headers})) xhr.setRequestHeader(name, value);
         xhr.upload.addEventListener("progress", (evt) => {
             if (evt.lengthComputable && onProgress) onProgress(evt.loaded, evt.total);
         });
         xhr.addEventListener("load", () => {
             if (xhr.status === 401) {
-                clearSession();
-                window.location.href = loginUrl();
+                _sessionEnded();
                 reject(new Error("Not authenticated"));
                 return;
             }
@@ -461,9 +456,12 @@ function _uploadWithProgress(path, formData, onProgress) {
 const ASSET_API = {volume: "volumes", mesh: "meshes", pointcloud: "pointclouds"};
 
 export const api = {
-    async login(username, password) {
+    // Signs in: the server answers with the session cookie (and {username, role}); nothing to store here.
+    // `remember` = "keep me signed in" (the cookie then outlives the browser session).
+    async login(username, password, remember = false) {
         const body = new URLSearchParams({username, password});
-        const res = await fetch("/api/auth/login", {method: "POST", body});
+        if (remember) body.set("remember", "true");
+        const res = await fetch("/api/auth/login", {method: "POST", body, credentials: "same-origin", headers: {[CSRF_HEADER]: CSRF_VALUE}});
         if (!res.ok) {
             let detail = "Login failed";
             try {
@@ -478,8 +476,8 @@ export const api = {
     me() {
         return request("/api/users/me");
     },
-    // Changes the signed-in user's own password. Resolves with a fresh token (the old one
-    // is revoked by the server): pass it to setSession() to stay signed in.
+    // Changes the signed-in user's own password. The server ends all the user's sessions and gives this browser a new
+    // cookie, so it stays signed in; other browsers have to sign in again.
     changePassword(currentPassword, newPassword) {
         return request("/api/users/me/password", {
             method: "POST",
@@ -497,9 +495,10 @@ export const api = {
     deleteThumbnail(kind, id) {
         return request(`/api/${ASSET_API[kind]}/${id}/thumbnail`, {method: "DELETE"});
     },
-    // <img> cannot send the Authorization header, so the image is fetched and handed out as a
-    // blob: URL. Resolves with null when the asset has no (readable) thumbnail.
+    // The URL of a thumbnail for an <img>: the browser sends the session cookie itself. Only a guest (bearer header,
+    // which an <img> cannot send) gets the image fetched and handed out as a blob: URL; null when it cannot be read.
     async thumbnailUrl(kind, id) {
+        if (!isGuestSession()) return `/api/${ASSET_API[kind]}/${id}/thumbnail`;
         try {
             const res = await request(`/api/${ASSET_API[kind]}/${id}/thumbnail`);
             return URL.createObjectURL(await res.blob());
@@ -789,8 +788,10 @@ export const api = {
     deleteReportImage(volumeId, imageId) {
         return request(`/api/volumes/${volumeId}/report/images/${imageId}`, {method: "DELETE"});
     },
-    // A report's image, as a blob: URL (an <img> cannot send the Authorization header). Null when it cannot be read.
+    // A report's image, for an <img>: the plain URL (the cookie goes along), or for a guest of a share link (bearer
+    // header, which an <img> cannot send) a blob: URL. Null when it cannot be read.
     async reportImageUrl(volumeId, imageId) {
+        if (!isGuestSession()) return `/api/volumes/${volumeId}/report/images/${imageId}`;
         try {
             const res = await request(`/api/volumes/${volumeId}/report/images/${imageId}`);
             return URL.createObjectURL(await res.blob());
@@ -904,7 +905,10 @@ export function passwordLinkUrl(token) {
 }
 
 async function publicPost(path, body) {
-    const res = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    const res = await fetch(path, {
+        method: "POST", credentials: "same-origin",
+        headers: {"Content-Type": "application/json", [CSRF_HEADER]: CSRF_VALUE}, body: JSON.stringify(body),
+    });
     if (!res.ok) {
         let detail = `Request failed (${res.status})`;
         try {
@@ -1093,8 +1097,8 @@ export function wireLogout() {
   }
   const btn = document.getElementById("logout-btn");
   if (btn) {
-    btn.addEventListener("click", () => {
-      clearSession();
+    btn.addEventListener("click", async () => {
+      await signOut();
       window.location.href = "/login.html";
     });
   }

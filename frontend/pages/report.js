@@ -9,7 +9,7 @@ import { renderMarkdown } from "../js/report-markdown.js";
 import { wrapSelection, prefixLines, insertText, insertDisplayMath, imageMarkdown } from "../js/markdown-edit.js";
 import { buildAnchors, mapScroll } from "../js/scroll-sync.js";
 
-requireLogin();
+await requireLogin();
 const role = getRole();
 const isEditor = role === "editor" || role === "admin";
 const isGuest = role === "guest";

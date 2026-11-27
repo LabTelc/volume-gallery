@@ -2,7 +2,7 @@
 import { requireLogin, getRole, getUsername, renderShell, wireLogout, getBranding, contactItems } from "../js/api.js";
 import { helpPageHtml, wireHelpPage } from "../js/help.js";
 
-requireLogin();
+await requireLogin();
 const role = getRole();
 
 document.getElementById("shell").innerHTML = `

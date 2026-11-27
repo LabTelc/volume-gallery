@@ -90,13 +90,12 @@ http {
 			ssl_session_timeout 1d;
 
 		# Security headers. No location below sets add_header itself, so these apply everywhere
-		# (a location that adds its own header would have to repeat them). A full CSP is not set:
-		# the Potree and 3DHOP viewers use inline scripts and workers.
-		add_header X-Content-Type-Options "nosniff" always;
-		add_header X-Frame-Options "SAMEORIGIN" always;
-		add_header Referrer-Policy "same-origin" always;
+		# (a location that adds its own header would have to repeat them). X-Content-Type-Options,
+		# Referrer-Policy, Content-Security-Policy, Cache-Control: no-store on /api/auth/* and (VG_HSTS_MAX_AGE)
+		# Strict-Transport-Security come from the app itself (backend/app/web_security.py): sending them here too
+		# would repeat the header lines. docs/auth.md lists what the proxy has to preserve for the session cookie.
+		add_header X-Frame-Options "DENY" always;
 		add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
-		add_header Content-Security-Policy "frame-ancestors 'self'; base-uri 'self'; object-src 'none'" always;
 
 		# Cross-origin isolation: the slice views share one block cache between their three workers in a
 		# SharedArrayBuffer, which a browser only hands to an isolated page. Everything the pages load comes

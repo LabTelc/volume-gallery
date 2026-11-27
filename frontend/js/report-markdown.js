@@ -127,9 +127,9 @@ function build() {
     if (REPORT_IMAGE.test(href)) {
       tokens[i].attrs = tokens[i].attrs.filter(([name]) => name !== "href"); // img:<id> is for images only
     } else if (/^\/(?!\/)/.test(href)) {
-      // a page of this app (e.g. a bookmark of the viewer): a new tab that keeps the sign-in, which "noopener" would drop
+      // a page of this app (e.g. a bookmark of the viewer): a new tab (the sign-in is a cookie, so it is signed in)
       tokens[i].attrSet("target", "_blank");
-      tokens[i].attrSet("rel", "nofollow");
+      tokens[i].attrSet("rel", "noopener noreferrer nofollow");
     } else if (!href.startsWith("#")) {
       tokens[i].attrSet("target", "_blank");
       tokens[i].attrSet("rel", "noopener noreferrer nofollow");

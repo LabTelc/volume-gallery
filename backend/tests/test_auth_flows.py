@@ -12,7 +12,7 @@ from app.models import AuditEvent, Role, User, UserToken
 from app.security import create_access_token, create_file_token, create_share_session_token, hash_password
 from app.utils import get_utc_now
 
-from conftest import PASSWORD
+from conftest import PASSWORD, session_headers
 
 
 def login(client, username, password=PASSWORD):
@@ -27,7 +27,7 @@ def audit_actions(db):
 # --------------------------------------------------------------------------- login
 
 class TestLogin:
-    def test_success(self, client, reader):
+    def test_success(self, client, reader, allow_bearer):
         response = login(client, reader.username)
         assert response.status_code == 200
         body = response.json()
@@ -36,7 +36,7 @@ class TestLogin:
         claims = jwt.decode(body["access_token"], settings.SECRET_KEY, algorithms=["HS256"])
         assert claims["sub"] == reader.username and claims["type"] == "access" and "pwv" in claims
 
-    def test_the_token_works(self, client, reader):
+    def test_the_token_works(self, client, reader, allow_bearer):
         token = login(client, reader.username).json()["access_token"]
         me = client.get("/api/users/me", headers={"Authorization": f"Bearer {token}"})
         assert me.status_code == 200 and me.json()["username"] == reader.username
@@ -151,7 +151,7 @@ class TestBearerTokens:
         db.commit()
         assert client.get("/api/users/me", headers=headers).status_code == 401
 
-    def test_the_role_comes_from_the_database_not_from_the_token(self, client, reader):
+    def test_the_role_comes_from_the_database_not_from_the_token(self, client, reader, allow_bearer):
         forged_claim = create_access_token(reader.username, "admin")  # claims admin, is a reader
         response = client.get("/api/users", headers={"Authorization": f"Bearer {forged_claim}"})
         assert response.status_code == 403
@@ -288,8 +288,10 @@ class TestPasswordLinks:
 
     def test_using_the_link_returns_a_working_session(self, client, admin, auth):
         link = self.invite(client, admin, auth)
-        token = self.set_password(client, link["token"]).json()["access_token"]
-        assert client.get("/api/users/me", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+        response = self.set_password(client, link["token"])
+        assert "access_token" not in response.json()  # (bearer tokens are off): the cookie is the session
+        cookie = response.headers["set-cookie"].split(";")[0].split("=", 1)[1]
+        assert client.get("/api/users/me", headers=session_headers(cookie)).status_code == 200
 
     def test_links_are_audited(self, client, admin, auth, db):
         link = self.invite(client, admin, auth)
@@ -319,7 +321,7 @@ class TestChangeOwnPassword:
         old = auth(reader)
         response = self.change(client, old)
         assert response.status_code == 200
-        fresh = {"Authorization": f"Bearer {response.json()['access_token']}"}
+        fresh = session_headers(response.headers["set-cookie"].split(";")[0].split("=", 1)[1])
         assert client.get("/api/users/me", headers=old).status_code == 401
         assert client.get("/api/users/me", headers=fresh).status_code == 200
         assert login(client, reader.username, "a-new-password-1").status_code == 200

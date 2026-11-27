@@ -2,7 +2,7 @@
 import { api, requireLogin, getRole, getUsername, renderShell, wireLogout, passwordLinkUrl } from "../js/api.js";
 import { pageHint } from "../js/help.js";
 
-requireLogin();
+await requireLogin();
 const role = getRole();
 if (role !== "admin") window.location.href = "/index.html";
 

@@ -12,10 +12,11 @@ from .database import init_db, engine
 from .models import User, Role, Volume, Mesh, PointCloud, AssetStatus
 from .security import hash_password
 from .config import settings, check_secret_key
-from . import audit, workdir, jobs, processing
+from . import audit, sessions, workdir, jobs, processing
 from .utils import _now
 from .routers import auth, users, volumes, meshes, pointclouds, branding, shares, uploads, folders, paths, bookmarks, admin
 from .routers import attachments, reports, processing as processing_router
+from .web_security import SecurityMiddleware
 
 
 def _bootstrap_admin():
@@ -79,6 +80,7 @@ async def lifespan(app: FastAPI):
     init_db()
     with Session(engine) as session:
         audit.prune(session)  # (VG_AUDIT_RETENTION_DAYS; the default keeps everything)
+        sessions.purge_expired(session)  # browser sessions that ran out while the server was off
     _bootstrap_admin()
     if not jobs.enabled():  # with a queue the worker does this at its start (app/worker.py)
         _recover_interrupted_jobs()
@@ -93,6 +95,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Volume Gallery", lifespan=lifespan)
+# CSRF check for state-changing /api requests and the security headers (see web_security.py). There is deliberately no
+# CORS middleware: the API is same-origin only.
+app.add_middleware(SecurityMiddleware)
 
 app.include_router(branding.router)
 app.include_router(auth.router)

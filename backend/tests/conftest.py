@@ -32,6 +32,7 @@ os.environ.update({
     "VG_HISTOGRAM_BACKFILL": "0",
     "VG_MIN_PASSWORD_LENGTH": "8",
     "VG_ADMIN_PASSWORD": "",
+    "VG_COOKIE_SECURE": "1",          # the production setting: __Host-vg_session, Secure
 })
 
 import pytest  # noqa: E402
@@ -43,7 +44,8 @@ from app.database import engine, init_db  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import AssetStatus, Role, User, Volume  # noqa: E402
 from app.routers import volumes as volumes_router  # noqa: E402
-from app.security import create_access_token, hash_password, password_fingerprint  # noqa: E402
+from app import sessions as vg_sessions  # noqa: E402
+from app.security import hash_password  # noqa: E402
 
 PASSWORD = "correct-horse-battery"
 
@@ -75,6 +77,19 @@ def _clean_state():
 def client():
     # Not used as a context manager on purpose: that would run the app's start-up (bootstrap admin,
     # housekeeping). The tests that cover start-up do it themselves.
+    # Like the frontend, it sends the CSRF header on everything (a test that wants it missing uses `raw_client`).
+    return TestClient(app, headers={"X-Requested-With": "vg"})
+
+
+@pytest.fixture
+def allow_bearer(monkeypatch):
+    """The compatibility mode for API / CLI clients: VG_ALLOW_BEARER_AUTH=1 (off by default)."""
+    monkeypatch.setattr(settings, "ALLOW_BEARER_AUTH", True)
+
+
+@pytest.fixture
+def raw_client():
+    """A client that sends no CSRF header (and nothing else) of its own."""
     return TestClient(app)
 
 
@@ -102,14 +117,22 @@ def make_user(db):
     return _make
 
 
+def session_headers(raw: str) -> dict:
+    """What a browser holding session id `raw` sends: the cookie, the CSRF header and an Origin of this app."""
+    return {
+        "Cookie": f"{vg_sessions.cookie_name()}={raw}",
+        "X-Requested-With": "vg",
+        "Origin": "http://testserver",
+    }
+
+
 @pytest.fixture
 def auth():
-    """auth(user) -> Authorization header for a valid login token of that user."""
-    def _auth(user):
-        token = create_access_token(
-            subject=user.username, role=user.role.value, pwv=password_fingerprint(user.password_hash)
-        )
-        return {"Authorization": f"Bearer {token}"}
+    """auth(user) -> the headers of a browser that has just signed in as that user (a new server-side session)."""
+    def _auth(user, *, remember=False):
+        with Session(engine) as db:
+            raw, _row = vg_sessions.create_session(db, user, remember=remember)
+        return session_headers(raw)
     return _auth
 
 
@@ -194,5 +217,5 @@ def open_share(client):
         response = client.get(f"/s/{code}", follow_redirects=False)
         assert response.status_code == 302, response.text
         fragment = parse_qs(urlparse(response.headers["location"]).fragment)
-        return {"Authorization": f"Bearer {fragment['vg_st'][0]}"}
+        return {"Authorization": f"Bearer {fragment['vg_st'][0]}", "X-Requested-With": "vg"}
     return _open

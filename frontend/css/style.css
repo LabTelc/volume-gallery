@@ -1218,3 +1218,7 @@ body.report-editing { overflow: hidden; }
   td.row-actions > * { vertical-align: middle; margin: 0.15em 0.4em 0.15em 0; }
 }
 td { vertical-align: middle; }
+
+/* login page: the "keep me signed in" checkbox */
+.field label.remember { display: flex; align-items: center; gap: 0.5em; font-weight: normal; cursor: pointer; }
+.field label.remember input { width: auto; margin: 0; }

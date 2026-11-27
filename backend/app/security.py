@@ -121,8 +121,9 @@ def create_file_token(subject: str, asset_id: int, kind: str, min_lod: Optional[
     - min_lod (sharded-volume tokens only) caps the finest LOD served — see routers/volumes.py.
     - ver (sharded-volume tokens only): the volume's version hash. js/sw.js keys the bricks it caches by it.
     - user: whose request minted the token. The token remembers the share link (shr) or the account (uid)
-      it came from, so deps.file_token_revoked() can refuse it once that share is revoked or expired or
-      that account is disabled or deleted, instead of letting it run out its full lifetime."""
+      and the browser session (ses) it came from, so deps.file_token_revoked() can refuse it once that share is
+      revoked or expired, that account is disabled or deleted or that session has ended (logout), instead of
+      letting it run out its full lifetime."""
     expire = datetime.utcnow() + timedelta(minutes=settings.FILE_TOKEN_EXPIRE_MINUTES)
     payload = {
         "sub": subject,
@@ -140,6 +141,9 @@ def create_file_token(subject: str, asset_id: int, kind: str, min_lod: Optional[
         payload["shr"] = scope["share_id"]
     elif user is not None and user.id is not None and user.id > 0:
         payload["uid"] = user.id
+        session_id = getattr(user, "_session_id", None)  # set by deps.get_current_user for a cookie sign-in
+        if session_id is not None:
+            payload["ses"] = int(session_id)  # the token stops working when that session ends (logout, ...)
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 

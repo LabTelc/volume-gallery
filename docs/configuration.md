@@ -32,7 +32,20 @@ application, **worker** = the conversion worker, **nginx** = the reverse proxy.
 | `VG_MESH_MAX_TEXTURE_SIZE` | `8192` | app, worker | Mesh textures larger than this (longest side, px) are scaled down while converting; 0 keeps them. |
 | `VG_MESH_EXTRA_MAX_MB` | `256` | app | Largest texture or `.mtl` file uploaded together with a mesh, in MB. |
 | `VG_UPLOAD_STAGING_MAX_AGE_HOURS` | `24` | app | Unclaimed staged uploads older than this are deleted. |
-| `VG_ACCESS_TOKEN_MINUTES` | `480` | app | Login session length. |
+| `VG_ACCESS_TOKEN_MINUTES` | `480` | app | Lifetime of the bearer access token (API / CLI clients; see `VG_ALLOW_BEARER_AUTH`). |
+| `VG_COOKIE_SECURE` | `1` | app | `0` only for local development over plain http: the session cookie then has no `Secure` flag and is called `vg_session` instead of `__Host-vg_session`. |
+| `VG_SESSION_IDLE_MINUTES` | `480` | app | A browser session ends after this long without a request. |
+| `VG_SESSION_ABSOLUTE_HOURS` | `24` | app | ... and in any case this long after sign-in. |
+| `VG_REMEMBER_DAYS` | `30` | app | "Keep me signed in": cookie `Max-Age` and absolute limit, in days. |
+| `VG_REMEMBER_IDLE_DAYS` | `7` | app | Idle limit of a "keep me signed in" session, in days. |
+| `VG_ALLOW_BEARER_AUTH` | `0` | app | `1`: the login also returns a bearer access token and `Authorization: Bearer` works for API / CLI clients. `0`: browser cookie only (default). Share-link tokens are always accepted. See [auth.md](auth.md). |
+| `VG_LOGIN_WINDOW_MINUTES` | `15` | app | Window in which failed sign-ins are counted for the lockout. |
+| `VG_LOGIN_MAX_FAILURES` | `5` | app | Failures for one name from one address before it is locked out for the rest of the window. |
+| `VG_LOGIN_MAX_FAILURES_PER_IP` | `30` | app | Failures from one address (any names). |
+| `VG_LOGIN_MAX_FAILURES_PER_USER` | `50` | app | Failures for one name (any address). |
+| `VG_ALLOWED_ORIGINS` | empty | app | Extra origins (comma separated, e.g. `https://gallery.example.org`) that may send state-changing requests besides the one the request was made to. |
+| `VG_CSP` | `enforce` | app | `enforce`, `report-only` (violations only show in the browser console) or `off`. |
+| `VG_HSTS_MAX_AGE` | `0` | app | `Strict-Transport-Security` max-age in seconds on https requests; 0 = not sent. Leave at 0 with a self-signed certificate. |
 | `VG_FILE_TOKEN_MINUTES` | `30` | app | Lifetime of the token that authorizes a data or mesh download. |
 | `VG_MIN_PASSWORD_LENGTH` | `8` | app | Shortest password accepted. |
 | `VG_PASSWORD_LINK_HOURS` | `72` | app | How long a set-password / reset link works. |

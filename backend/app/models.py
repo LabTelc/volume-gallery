@@ -53,6 +53,21 @@ class UserToken(SQLModel, table=True):
     used_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
 
 
+class UserSession(SQLModel, table=True):
+    """A browser sign-in (see sessions.py). The cookie holds a random id; only its SHA-256 is kept here, so a copy of
+    the database is no use for signing in. The role is NOT stored: it is read from the user on every request, so a
+    role change or a disabled account takes effect at once."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    token_hash: str = Field(index=True, unique=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    created_at: datetime = Field(default_factory=get_utc_now, sa_type=DateTime(timezone=True))
+    last_seen_at: datetime = Field(default_factory=get_utc_now, sa_type=DateTime(timezone=True))
+    expires_at: datetime = Field(sa_type=DateTime(timezone=True))  # absolute end, whatever the activity
+    remember: bool = Field(default=False)  # "keep me signed in": the cookie carries a Max-Age
+    pwv: str = ""  # fingerprint of the password the session was started with: another password ends it, however it was set
+    ip: str = ""
+
+
 class AuditEvent(SQLModel, table=True):
     """One line of the audit log (see audit.py): who did what to what, when, from where. Append-only. Names are
     copied in and there are no foreign keys, so a line stays readable after the user or the item it mentions is

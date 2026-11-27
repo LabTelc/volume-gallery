@@ -11,6 +11,16 @@ class Token(BaseModel):
     username: str
 
 
+class SessionInfo(BaseModel):
+    """Who is signed in (GET /api/auth/me) and what a sign-in answers with. The browser's credential is the HttpOnly
+    cookie, which scripts cannot read: this is all the frontend gets to know. `access_token`/`token_type` are only
+    present while VG_ALLOW_BEARER_AUTH is on (API / CLI clients)."""
+    username: str
+    role: Role
+    access_token: Optional[str] = None
+    token_type: Optional[str] = None
+
+
 class UserCreate(BaseModel):
     """A new account has no password: the response carries the link with which its user sets one."""
     username: str = Field(min_length=1, max_length=150)
